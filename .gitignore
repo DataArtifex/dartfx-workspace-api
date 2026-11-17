@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Documentation builds
+docs/build/
+
+# Environments
+.env
+.env.*
+!.env.example
+
+# Docker Compose local/server overrides (keep .example tracked)
+docker-compose.override.yaml
+docker-compose.override.yml
+compose.override.yaml
+compose.override.yml
+
+# Local API state & caches
+.dartfx-api/
+.ruff_cache/
+.mypy_cache/
+.DS_Store

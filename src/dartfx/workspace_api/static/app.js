@@ -1,0 +1,821 @@
+(() => {
+  const rootMeta = document.querySelector('meta[name="dartfx-root-path"]');
+  const BASE = (rootMeta ? rootMeta.getAttribute("content") : "").replace(/\/$/, "");
+  const API = (path) => `${BASE}${path}`;
+
+  const state = {
+    apiKey: sessionStorage.getItem("dartfx_api_key") || "",
+    principal: { id: "anonymous", tier: "anonymous", label: "Public Anonymous" },
+    spaces: [],
+    workspaces: [],
+    currentSpaceId: null,
+    currentWsId: null,
+    currentDir: ".",
+    currentResource: null,
+    eventSources: new Map(),
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  function fmtBytes(bytes) {
+    if (bytes == null) return "Unlimited";
+    if (bytes < 1024) return `${bytes} B`;
+    let val = bytes;
+    for (const unit of ["KB", "MB", "GB", "TB"]) {
+      val /= 1024;
+      if (val < 1024) return `${val.toFixed(1)} ${unit}`;
+    }
+    return `${val.toFixed(1)} PB`;
+  }
+
+  function toast(message, isError = false) {
+    const el = document.createElement("div");
+    el.className = `toast${isError ? " error" : ""}`;
+    el.textContent = message;
+    $("toast-container").appendChild(el);
+    setTimeout(() => el.remove(), 4500);
+  }
+
+  async function apiFetch(path, opts = {}) {
+    const headers = new Headers(opts.headers || {});
+    if (state.apiKey) headers.set("X-API-Key", state.apiKey);
+    const res = await fetch(API(path), { ...opts, headers });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    const ctype = res.headers.get("content-type") || "";
+    if (ctype.includes("application/json")) return res.json();
+    return res.text();
+  }
+
+  function authQuerySuffix() {
+    return state.apiKey ? `api_key=${encodeURIComponent(state.apiKey)}` : "";
+  }
+
+  function downloadUrl(path) {
+    const sep = path.includes("?") ? "&" : "?";
+    const qs = authQuerySuffix();
+    return API(qs ? `${path}${sep}${qs}` : path);
+  }
+
+  async function refreshWhoami() {
+    try {
+      state.principal = await apiFetch("/auth/whoami");
+    } catch (err) {
+      toast(`Auth check failed: ${err.message}`, true);
+      state.apiKey = "";
+      sessionStorage.removeItem("dartfx_api_key");
+      state.principal = await apiFetch("/auth/whoami");
+    }
+    const badge = $("auth-badge");
+    badge.className = `tier-badge tier-${state.principal.tier}`;
+    if (state.principal.tier === "admin") {
+      badge.textContent = `Admin: ${state.principal.label}`;
+    } else if (state.principal.tier === "user") {
+      badge.textContent = `User: ${state.principal.label}`;
+    } else {
+      badge.textContent = "Anonymous Sandbox";
+    }
+    document.querySelectorAll(".admin-only").forEach((el) => {
+      el.classList.toggle("hidden", state.principal.tier !== "admin");
+    });
+  }
+
+  async function loadSpacesAndWorkspaces() {
+    state.spaces = await apiFetch("/spaces");
+    state.workspaces = await apiFetch("/workspaces");
+
+    const spaceSelect = $("space-select");
+    spaceSelect.innerHTML = `<option value="">All Accessible Spaces</option>`;
+    state.spaces.forEach((sp) => {
+      const opt = document.createElement("option");
+      opt.value = sp.id;
+      opt.textContent = `${sp.name} (${sp.visibility})`;
+      spaceSelect.appendChild(opt);
+    });
+
+    const adminSpaceSelect = $("admin-ws-space");
+    adminSpaceSelect.innerHTML = "";
+    state.spaces.forEach((sp) => {
+      const opt = document.createElement("option");
+      opt.value = sp.id;
+      opt.textContent = `${sp.name} (${sp.id})`;
+      adminSpaceSelect.appendChild(opt);
+    });
+
+    if (state.currentSpaceId) spaceSelect.value = state.currentSpaceId;
+    populateWorkspaceSelect();
+  }
+
+  function populateWorkspaceSelect() {
+    const wsSelect = $("workspace-select");
+    const filtered = state.currentSpaceId
+      ? state.workspaces.filter((w) => w.space_id === state.currentSpaceId)
+      : state.workspaces;
+
+    wsSelect.innerHTML = "";
+    filtered.forEach((ws) => {
+      const opt = document.createElement("option");
+      opt.value = ws.id;
+      opt.textContent = `${ws.name} (${ws.slug})`;
+      wsSelect.appendChild(opt);
+    });
+
+    if (filtered.length > 0) {
+      if (!filtered.some((w) => w.id === state.currentWsId)) {
+        state.currentWsId = filtered[0].id;
+        state.currentDir = ".";
+      }
+      wsSelect.value = state.currentWsId;
+      refreshWorkspaceData();
+    } else {
+      state.currentWsId = null;
+    }
+  }
+
+  async function refreshWorkspaceData() {
+    if (!state.currentWsId) return;
+    await Promise.all([loadWorkspaceOverview(), loadFiles(), loadJobs()]);
+  }
+
+  async function loadWorkspaceOverview() {
+    const detail = await apiFetch(`/workspaces/${state.currentWsId}`);
+    $("overview-title").textContent = detail.name;
+    $("overview-path").textContent = detail.path;
+    $("ws-visibility-badge").textContent = detail.visibility;
+    $("ws-ephemeral-badge").classList.toggle("hidden", !detail.is_ephemeral);
+
+    const quota = detail.storage_quota_bytes;
+    const used = detail.used_bytes || 0;
+    $("quota-text").textContent = quota ? `${fmtBytes(used)} / ${fmtBytes(quota)}` : `${fmtBytes(used)} / Unlimited`;
+    const pct = quota ? Math.min(100, (used / quota) * 100) : 0;
+    $("quota-fill").style.width = `${pct}%`;
+
+    const stats = detail.stats;
+    if (!stats) {
+      $("stat-total-files").textContent = "0";
+      $("stat-total-size").textContent = fmtBytes(used);
+      $("stat-registered").textContent = "0";
+      $("stat-unregistered").textContent = "0";
+      $("type-breakdown").innerHTML = `<p class="muted">Workspace not initialized yet.</p>`;
+      return;
+    }
+
+    $("stat-total-files").textContent = String(stats.total_files);
+    $("stat-total-size").textContent = fmtBytes(stats.total_size_bytes);
+    $("stat-registered").textContent = String(stats.registered_count);
+    $("stat-unregistered").textContent = String(stats.unregistered_count);
+
+    const bd = $("type-breakdown");
+    bd.innerHTML = "";
+    Object.entries(stats.types_info || {}).forEach(([ftype, info]) => {
+      const div = document.createElement("div");
+      div.className = "breakdown-item";
+      div.innerHTML = `<div class="muted">${ftype}</div><strong>${info.count} files</strong> <small class="muted">(${fmtBytes(info.size_bytes)})</small>`;
+      bd.appendChild(div);
+    });
+  }
+
+  function renderBreadcrumbs() {
+    const container = $("file-breadcrumbs");
+    container.innerHTML = "";
+    const parts = state.currentDir === "." || state.currentDir === "/" ? [] : state.currentDir.split("/").filter(Boolean);
+    $("upload-target-label").textContent = parts.length ? `/${parts.join("/")}` : "/";
+
+    const rootBtn = document.createElement("button");
+    rootBtn.className = "crumb";
+    rootBtn.textContent = "/";
+    rootBtn.onclick = () => {
+      state.currentDir = ".";
+      loadFiles();
+    };
+    container.appendChild(rootBtn);
+
+    let acc = "";
+    parts.forEach((p) => {
+      acc = acc ? `${acc}/${p}` : p;
+      const target = acc;
+      const btn = document.createElement("button");
+      btn.className = "crumb";
+      btn.textContent = p;
+      btn.onclick = () => {
+        state.currentDir = target;
+        loadFiles();
+      };
+      container.appendChild(btn);
+    });
+  }
+
+  async function loadFiles() {
+    if (!state.currentWsId) return;
+    renderBreadcrumbs();
+
+    const params = new URLSearchParams({ path: state.currentDir });
+    if ($("filter-recursive").checked) params.set("recursive", "true");
+    if ($("filter-glob").value.trim()) params.set("glob", $("filter-glob").value.trim());
+    if ($("filter-type").value) params.set("type", $("filter-type").value);
+    if ($("filter-format").value.trim()) params.set("format", $("filter-format").value.trim());
+    if ($("filter-registered").value) params.set("registered", $("filter-registered").value);
+
+    const entries = await apiFetch(`/workspaces/${state.currentWsId}/files?${params.toString()}`);
+    const tbody = $("files-tbody");
+    tbody.innerHTML = "";
+
+    if (entries.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="muted">No files match the current path or filters.</td></tr>`;
+      return;
+    }
+
+    entries.forEach((entry) => {
+      const tr = document.createElement("tr");
+      const regBadge = entry.is_dir ? "-" : entry.registered ? `<span class="text-ok">✔</span>` : `<span class="text-warn">✘</span>`;
+      const typeLabel = entry.is_dir
+        ? "directory"
+        : entry.file_format && entry.file_format !== "undetermined"
+          ? `${entry.file_type}/${entry.file_format}`
+          : entry.file_type;
+
+      const actions = [];
+      if (!entry.is_dir) {
+        actions.push(`<button class="btn btn-xs btn-secondary act-dl" title="Download">⬇</button>`);
+        if (["csv", "parquet", "pq"].includes(entry.file_format)) {
+          actions.push(`<button class="btn btn-xs btn-secondary act-fairify" title="Run Fairify">✨</button>`);
+        }
+        if (["sav", "dta", "sas7bdat", "por", "xpt", "zsav"].includes(entry.file_format)) {
+          actions.push(`<button class="btn btn-xs btn-secondary act-tocsv" title="Convert to CSV">📄</button>`);
+        }
+      }
+      actions.push(`<button class="btn btn-xs btn-danger act-del" title="Delete">🗑</button>`);
+
+      tr.innerHTML = `
+        <td>${regBadge}</td>
+        <td><button class="file-link">${entry.is_dir ? "📁 " : "📄 "}${entry.name}${entry.is_dir ? "/" : ""}</button></td>
+        <td><span class="pill">${typeLabel}</span></td>
+        <td>${entry.is_dir ? "-" : fmtBytes(entry.size_bytes)}</td>
+        <td class="muted">${new Date(entry.modified_at).toLocaleString()}</td>
+        <td><div class="actions-row">${actions.join("")}</div></td>
+      `;
+
+      tr.querySelector(".file-link").onclick = () => {
+        if (entry.is_dir) {
+          state.currentDir = entry.path;
+          loadFiles();
+        } else {
+          openResourceDrawer(entry);
+        }
+      };
+
+      const dlBtn = tr.querySelector(".act-dl");
+      if (dlBtn) {
+        dlBtn.onclick = () => {
+          window.location.href = downloadUrl(
+            `/workspaces/${state.currentWsId}/files/download?path=${encodeURIComponent(entry.path)}`
+          );
+        };
+      }
+
+      const fairifyBtn = tr.querySelector(".act-fairify");
+      if (fairifyBtn) fairifyBtn.onclick = () => triggerFairify(entry.path);
+
+      const tocsvBtn = tr.querySelector(".act-tocsv");
+      if (tocsvBtn) tocsvBtn.onclick = () => triggerToCsv(entry.path);
+
+      tr.querySelector(".act-del").onclick = async () => {
+        if (!confirm(`Delete '${entry.path}'?`)) return;
+        try {
+          await apiFetch(`/workspaces/${state.currentWsId}/files?path=${encodeURIComponent(entry.path)}`, {
+            method: "DELETE",
+          });
+          toast(`Deleted ${entry.path}`);
+          refreshWorkspaceData();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      };
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function uploadFiles(fileList) {
+    if (!state.currentWsId || !fileList || fileList.length === 0) return;
+    const form = new FormData();
+    Array.from(fileList).forEach((f) => form.append("files", f));
+    form.append("target_dir", state.currentDir === "." ? "/" : state.currentDir);
+    form.append("overwrite", $("upload-overwrite").checked ? "true" : "false");
+    form.append("auto_scan", "true");
+
+    try {
+      const res = await apiFetch(`/workspaces/${state.currentWsId}/files/upload`, {
+        method: "POST",
+        body: form,
+      });
+      toast(`Uploaded ${res.length} file(s) and registered in KB.`);
+      await refreshWorkspaceData();
+    } catch (err) {
+      toast(`Upload failed: ${err.message}`, true);
+    }
+  }
+
+  async function openResourceDrawer(entry) {
+    state.currentResource = entry;
+    $("resource-drawer").classList.remove("hidden");
+    $("drawer-title").textContent = entry.name;
+    $("drawer-subtitle").textContent = entry.path;
+
+    $("drawer-download-btn").onclick = () => {
+      window.location.href = downloadUrl(
+        `/workspaces/${state.currentWsId}/files/download?path=${encodeURIComponent(entry.path)}`
+      );
+    };
+    $("drawer-fairify-btn").onclick = () => triggerFairify(entry.path);
+    $("drawer-tocsv-btn").onclick = () => triggerToCsv(entry.path);
+
+    const aboutEl = $("dtab-about");
+    if (entry.registered) {
+      try {
+        const detail = await apiFetch(
+          `/workspaces/${state.currentWsId}/resources/${encodeURIComponent(entry.uuid || entry.path)}`
+        );
+        const attrRows = Object.entries(detail.attributes || {})
+          .map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${v}</td></tr>`)
+          .join("");
+        aboutEl.innerHTML = `
+          <table class="kv-table">
+            <tr><td class="muted">UUID</td><td class="mono">${detail.uuid}</td></tr>
+            <tr><td class="muted">Path</td><td class="mono">${detail.path}</td></tr>
+            <tr><td class="muted">Type</td><td>${detail.type}</td></tr>
+            <tr><td class="muted">Format</td><td>${detail.file_format}</td></tr>
+            <tr><td class="muted">MIME</td><td>${detail.mime_type || "-"}</td></tr>
+            <tr><td class="muted">Size</td><td>${fmtBytes(detail.size_bytes)} (${detail.size_bytes} B)</td></tr>
+            <tr><td class="muted">BLAKE3</td><td class="mono">${detail.blake3_hash}</td></tr>
+            <tr><td class="muted">Created</td><td>${detail.created_at}</td></tr>
+            <tr><td class="muted">Modified</td><td>${detail.updated_at}</td></tr>
+            ${attrRows}
+          </table>`;
+      } catch (err) {
+        aboutEl.innerHTML = `<p class="muted">Could not load resource metadata: ${err.message}</p>`;
+      }
+    } else {
+      aboutEl.innerHTML = `<p class="muted">File is unregistered. Run Scan Workspace to index it in the Knowledge Base.</p>`;
+    }
+
+    loadPreview();
+    if (entry.registered && entry.uuid) loadRdf();
+    else $("rdf-content").textContent = "Resource is not registered in Knowledge Base.";
+  }
+
+  async function loadPreview() {
+    if (!state.currentResource) return;
+    try {
+      const mode = $("preview-mode").value;
+      const lines = $("preview-lines").value || 25;
+      const res = await apiFetch(
+        `/workspaces/${state.currentWsId}/files/preview?path=${encodeURIComponent(state.currentResource.path)}&mode=${mode}&lines=${lines}`
+      );
+      $("preview-content").textContent = res.lines.join("\n") || "(empty file)";
+    } catch (err) {
+      $("preview-content").textContent = `Preview error: ${err.message}`;
+    }
+  }
+
+  async function loadRdf() {
+    if (!state.currentResource || !state.currentResource.uuid) return;
+    try {
+      const fmt = $("rdf-format").value;
+      const txt = await apiFetch(
+        `/workspaces/${state.currentWsId}/resources/${state.currentResource.uuid}/rdf?format=${encodeURIComponent(fmt)}`
+      );
+      $("rdf-content").textContent = typeof txt === "string" ? txt : JSON.stringify(txt, null, 2);
+    } catch (err) {
+      $("rdf-content").textContent = `RDF error: ${err.message}`;
+    }
+  }
+
+  function subscribeJobSse(jobId) {
+    if (state.eventSources.has(jobId)) return;
+    const url = downloadUrl(`/jobs/${jobId}/events`);
+    const es = new EventSource(url);
+    state.eventSources.set(jobId, es);
+
+    es.addEventListener("task_event", (ev) => {
+      const data = JSON.parse(ev.data);
+      loadJobs();
+      if (["completed", "failed", "cancelled"].includes(data.status)) {
+        es.close();
+        state.eventSources.delete(jobId);
+        toast(`Job ${data.task_type} ${data.status}: ${data.current_step}`, data.status === "failed");
+        refreshWorkspaceData();
+      }
+    });
+    es.onerror = () => {
+      es.close();
+      state.eventSources.delete(jobId);
+    };
+  }
+
+  async function triggerScan(clean = false) {
+    try {
+      const job = await apiFetch(`/workspaces/${state.currentWsId}/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_path: ".", clean }),
+      });
+      toast(`Scan job queued (${job.id.slice(0, 8)})`);
+      subscribeJobSse(job.id);
+      loadJobs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function triggerFairify(sourcePath) {
+    try {
+      const job = await apiFetch(`/workspaces/${state.currentWsId}/fairify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_path: sourcePath, describe: false }),
+      });
+      toast(`Fairify job queued for ${sourcePath}`);
+      subscribeJobSse(job.id);
+      loadJobs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function triggerToCsv(sourcePath) {
+    try {
+      const job = await apiFetch(`/workspaces/${state.currentWsId}/readstat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_path: sourcePath, to_csv: true }),
+      });
+      toast(`ToCSV job queued for ${sourcePath}`);
+      subscribeJobSse(job.id);
+      loadJobs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function loadJobs() {
+    const jobs = await apiFetch(`/jobs?limit=30`);
+    const active = jobs.filter((j) => ["pending", "running"].includes(j.status));
+    const badge = $("active-job-count");
+    badge.textContent = String(active.length);
+    badge.classList.toggle("hidden", active.length === 0);
+
+    active.forEach((j) => subscribeJobSse(j.id));
+
+    const container = $("jobs-list");
+    container.innerHTML = "";
+    if (jobs.length === 0) {
+      container.innerHTML = `<div class="card muted">No jobs recorded yet.</div>`;
+      return;
+    }
+
+    jobs.forEach((job) => {
+      const card = document.createElement("div");
+      card.className = "job-card";
+      const logsTail = (job.logs || []).slice(-6).join("\n");
+      card.innerHTML = `
+        <div class="card-head">
+          <div>
+            <strong>${job.task_type.toUpperCase()}</strong>
+            <span class="pill">${job.status}</span>
+            <span class="mono muted">${job.id.slice(0, 8)}</span>
+          </div>
+          <div>
+            <span class="muted">${Math.round(job.progress_pct)}%</span>
+            ${["pending", "running"].includes(job.status) ? `<button class="btn btn-xs btn-danger btn-cancel-job">Cancel</button>` : ""}
+          </div>
+        </div>
+        <div class="muted">${job.current_step}</div>
+        <div class="progress-track"><div class="progress-bar" style="width:${job.progress_pct}%"></div></div>
+        ${job.error ? `<div class="text-warn">${job.error}</div>` : ""}
+        ${logsTail ? `<pre class="code-box mt-sm">${logsTail}</pre>` : ""}
+      `;
+      const cancelBtn = card.querySelector(".btn-cancel-job");
+      if (cancelBtn) {
+        cancelBtn.onclick = async () => {
+          await apiFetch(`/jobs/${job.id}/cancel`, { method: "POST" });
+          loadJobs();
+        };
+      }
+      container.appendChild(card);
+    });
+  }
+
+  function renderResultTable(targetEl, cols, rows) {
+    if (!cols || cols.length === 0) {
+      targetEl.innerHTML = `<p class="muted">Query executed with 0 columns.</p>`;
+      return;
+    }
+    const header = cols.map((c) => `<th>${c}</th>`).join("");
+    const body = rows
+      .map((r) => `<tr>${cols.map((c) => `<td>${r[c] ?? ""}</td>`).join("")}</tr>`)
+      .join("");
+    targetEl.innerHTML = `<div class="table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  async function loadAdminData() {
+    if (state.principal.tier !== "admin") return;
+    try {
+      const [keys, tools] = await Promise.all([apiFetch("/admin/api-keys"), apiFetch("/system/tools")]);
+      const keysEl = $("api-keys-list");
+      keysEl.innerHTML = keys.length === 0 ? `<p class="muted">No DB API keys issued yet.</p>` : "";
+      keys.forEach((k) => {
+        const row = document.createElement("div");
+        row.className = "tool-row mt-sm";
+        row.innerHTML = `
+          <div><strong>${k.label}</strong> <span class="pill">${k.tier}</span> <span class="mono muted">${k.key_prefix}...</span></div>
+          <button class="btn btn-xs btn-danger">Revoke</button>
+        `;
+        row.querySelector("button").onclick = async () => {
+          await apiFetch(`/admin/api-keys/${k.id}`, { method: "DELETE" });
+          loadAdminData();
+        };
+        keysEl.appendChild(row);
+      });
+
+      const toolsEl = $("system-tools-list");
+      toolsEl.innerHTML = "";
+      Object.entries(tools).forEach(([name, info]) => {
+        const row = document.createElement("div");
+        row.className = "tool-row";
+        row.innerHTML = `
+          <div><strong>${name}</strong> <span class="mono muted">${info.version || info.path || ""}</span></div>
+          <span class="${info.available ? "text-ok" : "text-warn"}">${info.available ? "Available" : "Missing"}</span>
+        `;
+        toolsEl.appendChild(row);
+      });
+    } catch (err) {
+      toast(`Admin load failed: ${err.message}`, true);
+    }
+  }
+
+  // Event bindings
+  document.querySelectorAll(".tab").forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      $(`tab-${btn.dataset.tab}`).classList.add("active");
+      if (btn.dataset.tab === "admin") loadAdminData();
+    };
+  });
+
+  document.querySelectorAll(".dtab").forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll(".dtab").forEach((t) => t.classList.remove("active"));
+      document.querySelectorAll(".dtab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      $(`dtab-${btn.dataset.dtab}`).classList.add("active");
+    };
+  });
+
+  $("theme-toggle").onclick = () => {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === "dark" ? "light" : "dark";
+  };
+
+  $("open-auth-modal").onclick = () => {
+    $("api-key-input").value = state.apiKey;
+    $("auth-modal").classList.remove("hidden");
+  };
+  $("close-auth-modal").onclick = () => $("auth-modal").classList.add("hidden");
+  $("save-api-key").onclick = async () => {
+    state.apiKey = $("api-key-input").value.trim();
+    if (state.apiKey) sessionStorage.setItem("dartfx_api_key", state.apiKey);
+    else sessionStorage.removeItem("dartfx_api_key");
+    $("auth-modal").classList.add("hidden");
+    await bootstrap();
+  };
+  $("clear-api-key").onclick = async () => {
+    state.apiKey = "";
+    sessionStorage.removeItem("dartfx_api_key");
+    $("auth-modal").classList.add("hidden");
+    await bootstrap();
+  };
+
+  $("space-select").onchange = (e) => {
+    state.currentSpaceId = e.target.value || null;
+    populateWorkspaceSelect();
+  };
+  $("workspace-select").onchange = (e) => {
+    state.currentWsId = e.target.value;
+    state.currentDir = ".";
+    refreshWorkspaceData();
+  };
+
+  $("btn-scan").onclick = () => triggerScan(false);
+  $("btn-scan-clean").onclick = () => triggerScan(true);
+  $("btn-download-ws-zip").onclick = () => {
+    window.location.href = downloadUrl(`/workspaces/${state.currentWsId}/files/archive?path=.`);
+  };
+  $("btn-download-folder-zip").onclick = () => {
+    window.location.href = downloadUrl(
+      `/workspaces/${state.currentWsId}/files/archive?path=${encodeURIComponent(state.currentDir)}`
+    );
+  };
+  $("btn-mkdir").onclick = async () => {
+    const name = prompt("New folder name (relative to current directory):");
+    if (!name) return;
+    const base = state.currentDir === "." ? "" : `${state.currentDir}/`;
+    try {
+      await apiFetch(`/workspaces/${state.currentWsId}/files/mkdir`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: `${base}${name}` }),
+      });
+      loadFiles();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("btn-refresh-files").onclick = loadFiles;
+  $("btn-browse-upload").onclick = () => $("file-input").click();
+  $("file-input").onchange = (e) => uploadFiles(e.target.files);
+  const dz = $("dropzone");
+  dz.ondragover = (e) => {
+    e.preventDefault();
+    dz.classList.add("dragover");
+  };
+  dz.ondragleave = () => dz.classList.remove("dragover");
+  dz.ondrop = (e) => {
+    e.preventDefault();
+    dz.classList.remove("dragover");
+    uploadFiles(e.dataTransfer.files);
+  };
+
+  $("close-drawer").onclick = () => $("resource-drawer").classList.add("hidden");
+  $("btn-reload-preview").onclick = loadPreview;
+  $("btn-reload-rdf").onclick = loadRdf;
+  $("btn-download-rdf").onclick = () => {
+    if (!state.currentResource || !state.currentResource.uuid) return;
+    const fmt = $("rdf-format").value;
+    window.location.href = downloadUrl(
+      `/workspaces/${state.currentWsId}/resources/${state.currentResource.uuid}/rdf?format=${encodeURIComponent(fmt)}`
+    );
+  };
+
+  document.querySelectorAll(".sparql-preset").forEach((btn) => {
+    btn.onclick = () => {
+      if (btn.dataset.preset === "data") {
+        $("sparql-input").value = `PREFIX dartfx: <https://dataartifex.org/workspace/>\nSELECT ?path ?format ?size WHERE {\n  ?s a dartfx:FileResource ;\n     dartfx:path ?path ;\n     dartfx:fileType "data" ;\n     dartfx:fileFormat ?format ;\n     dartfx:sizeBytes ?size .\n}`;
+      } else {
+        $("sparql-input").value = `PREFIX dartfx: <https://dataartifex.org/workspace/>\nSELECT ?path ?type ?format ?size WHERE {\n  ?s a dartfx:FileResource ;\n     dartfx:path ?path ;\n     dartfx:fileType ?type ;\n     dartfx:fileFormat ?format ;\n     dartfx:sizeBytes ?size .\n} ORDER BY ?path`;
+      }
+    };
+  });
+
+  $("btn-run-sparql").onclick = async () => {
+    try {
+      const res = await apiFetch(`/workspaces/${state.currentWsId}/sparql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: $("sparql-input").value }),
+      });
+      $("sparql-meta").textContent = `${res.row_count} rows`;
+      renderResultTable($("sparql-results"), res.columns, res.rows);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("btn-run-sql").onclick = async () => {
+    try {
+      const res = await apiFetch(`/workspaces/${state.currentWsId}/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: $("sql-input").value, max_rows: 500 }),
+      });
+      $("sql-meta").textContent = `${res.row_count} rows`;
+      renderResultTable($("sql-results"), res.columns, res.rows);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("btn-refresh-jobs").onclick = loadJobs;
+  $("btn-refresh-tools").onclick = loadAdminData;
+
+  $("btn-reset-ephemeral").onclick = async () => {
+    if (!confirm("Reset the Public Ephemeral Sandbox to its default sample state?")) return;
+    try {
+      await apiFetch("/admin/ephemeral/reset", { method: "POST" });
+      toast("Public Ephemeral Sandbox reset.");
+      await bootstrap();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("btn-wipe-kb").onclick = async () => {
+    if (!confirm(`Wipe RDF Knowledge Base for workspace '${state.currentWsId}'?`)) return;
+    try {
+      await apiFetch(`/admin/workspaces/${state.currentWsId}/kb`, { method: "DELETE" });
+      toast("Workspace KB wiped.");
+      refreshWorkspaceData();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("form-create-space").onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const quotaMb = fd.get("quota_mb");
+    try {
+      await apiFetch("/admin/spaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug: fd.get("slug"),
+          name: fd.get("name"),
+          description: fd.get("description") || "",
+          visibility: fd.get("visibility"),
+          storage_quota_bytes: quotaMb ? Number(quotaMb) * 1024 * 1024 : null,
+          root_path: fd.get("root_path") || null,
+        }),
+      });
+      e.target.reset();
+      toast("Space created.");
+      await loadSpacesAndWorkspaces();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("form-create-workspace").onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const quotaMb = fd.get("quota_mb");
+    try {
+      await apiFetch("/admin/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug: fd.get("slug"),
+          name: fd.get("name"),
+          space_id: fd.get("space_id") || null,
+          visibility: fd.get("visibility"),
+          team_id: fd.get("team_id") || null,
+          storage_quota_bytes: quotaMb ? Number(quotaMb) * 1024 * 1024 : null,
+          path: fd.get("path") || null,
+          initialize: true,
+          create_dirs: true,
+        }),
+      });
+      e.target.reset();
+      toast("Workspace created.");
+      await loadSpacesAndWorkspaces();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  $("form-create-key").onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const parseCsv = (v) =>
+      String(v || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    try {
+      const created = await apiFetch("/admin/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: fd.get("label"),
+          tier: fd.get("tier"),
+          team_ids: parseCsv(fd.get("team_ids")),
+          allowed_space_ids: parseCsv(fd.get("allowed_space_ids")),
+        }),
+      });
+      e.target.reset();
+      const banner = $("new-key-banner");
+      banner.textContent = `New ${created.info.tier} API key (save now, shown once): ${created.key}`;
+      banner.classList.remove("hidden");
+      loadAdminData();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  async function bootstrap() {
+    await refreshWhoami();
+    await loadSpacesAndWorkspaces();
+    if (state.principal.tier === "admin") loadAdminData();
+  }
+
+  bootstrap().catch((err) => toast(`Initialization error: ${err.message}`, true));
+})();

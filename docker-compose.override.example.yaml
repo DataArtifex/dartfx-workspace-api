@@ -1,0 +1,54 @@
+# =============================================================================
+# Docker Compose Override Template for dartfx-workspace-api
+# Copy this file to docker-compose.override.yaml on staging/production/dev hosts:
+#   cp docker-compose.override.example.yaml docker-compose.override.yaml
+# (docker-compose.override.yaml is git-ignored and automatically merged by Docker Compose)
+# =============================================================================
+
+services:
+  dartfx-workspace-api:
+    # --- Example 1: Connect directly to an external Kong / Nginx Docker network ---
+    # networks:
+    #   - dartfx
+    #   - kong-net
+
+    # --- Example 2: Environment-specific overrides & PostgreSQL backend ---
+    # environment:
+    #   - UVICORN_WORKERS=4
+    #   - CORS_ORIGINS=
+    #   - DATABASE_URL=postgresql+psycopg://dartfx:dartfx@postgres:5432/dartfx_workspace
+    #   - DARTFX_ADMIN_API_KEY=replace-with-strong-admin-token
+
+    # --- Example 3: Persistent volume mounts for registry & workspaces ---
+    # volumes:
+    #   - ./cache:/app/cache
+    #   - ./workspaces:/app/workspaces
+
+    # --- Example 4: Resource limits for production ---
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2.0"
+    #       memory: 1G
+    environment: []
+
+# --- Example 5: Optional dedicated PostgreSQL service ---
+# services:
+#   postgres:
+#     image: postgres:16-alpine
+#     restart: unless-stopped
+#     environment:
+#       POSTGRES_DB: dartfx_workspace
+#       POSTGRES_USER: dartfx
+#       POSTGRES_PASSWORD: dartfx
+#     volumes:
+#       - pg_data:/var/lib/postgresql/data
+#     networks:
+#       - dartfx
+#
+# volumes:
+#   pg_data:
+
+# networks:
+#   kong-net:
+#     external: true

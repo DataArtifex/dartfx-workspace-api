@@ -1,0 +1,151 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dartfx-workspace-api"
+dynamic = ["version"]
+description = "FastAPI microservice and canonical web UI for Data Artifex Workspaces (sync/async operations, SQLite/PostgreSQL registry, 3-tier access, SSE/WebSocket/AsyncAPI)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+keywords = ["fastapi", "workspace", "fair", "rdf", "sparql", "asyncapi", "data-artifex"]
+authors = [{ name = "kulnor", email = "pascal.heus@gmail.com" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: FastAPI",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+  "dartfx-workspace @ git+https://github.com/DataArtifex/dartfx-workspace.git",
+  "fastapi>=0.135.1",
+  "gunicorn>=23.0.0",
+  "httpx>=0.28.1",
+  "psycopg[binary]>=3.2.0",
+  "pydantic>=2.0.0",
+  "python-dotenv>=1.0.0",
+  "python-multipart>=0.0.18",
+  "sqlalchemy>=2.0.35",
+  "uvicorn>=0.41.0",
+]
+
+[project.urls]
+Documentation = "https://www.dataartifex.org/dartfx-workspace-api/"
+Issues = "https://github.com/DataArtifex/dartfx-workspace-api/issues"
+Source = "https://github.com/DataArtifex/dartfx-workspace-api"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/docs"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dartfx"]
+
+[tool.hatch.version]
+path = "src/dartfx/workspace_api/__about__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+  "coverage[toml]>=7.0.0",
+  "httpx>=0.28.1",
+  "pre-commit>=4.0.0",
+  "pyrefly>=1.0.0",
+  "pytest>=9",
+  "pytest-benchmark>=5.0.0",
+  "python-dotenv>=1.0.0",
+  "ruff>=0.3.0",
+]
+docs = [
+  "myst-parser>=5.0.0",
+  "sphinx>=9.0.0",
+  "sphinx-copybutton>=0.5.2",
+  "sphinx-rtd-theme>=3.1.0",
+]
+
+[tool.hatch.envs.default]
+dependencies = ["dev"]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "coverage run -m pytest {args:tests}"
+cov-report = ["- coverage combine", "coverage report"]
+cov = ["test-cov", "cov-report"]
+
+[[tool.hatch.envs.all.matrix]]
+python = ["3.12", "3.13"]
+
+[tool.hatch.envs.types]
+dependencies = ["dev"]
+
+[tool.hatch.envs.types.scripts]
+check = "pyrefly check {args:src tests}"
+
+[tool.hatch.envs.docs]
+dependencies = ["docs"]
+
+[tool.hatch.envs.docs.scripts]
+build = "sphinx-build -b html docs/source docs/build/html"
+serve = "python -m http.server -d docs/build/html"
+
+[tool.coverage.run]
+source_pkgs = ["workspace_api", "tests"]
+branch = true
+parallel = true
+omit = ["src/dartfx/workspace_api/__about__.py"]
+
+[tool.coverage.paths]
+source = ["src/dartfx/workspace_api", "*/dartfx-workspace-api/src/dartfx/workspace_api"]
+tests = ["tests"]
+
+[tool.coverage.report]
+exclude_lines = ["no cov", "if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+
+[tool.pytest.ini_options]
+pythonpath = "src/dartfx"
+testpaths = ["tests"]
+log_cli = true
+log_cli_level = "DEBUG"
+log_cli_format = "%(asctime)s [%(levelname)s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "src/dartfx"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "UP",  # pyupgrade
+  "ARG", # flake8-unused-arguments
+  "PT",  # flake8-pytest-style
+]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = ["ARG"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dartfx", "workspace_api"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pyrefly]
+search-path = ["src", "src/dartfx"]
+python-version = "3.12.0"
+preset = "default"
+ignore-missing-imports = ["*"]

@@ -1,0 +1,50 @@
+# Git & CI
+.git
+.gitignore
+.github
+.pre-commit-config.yaml
+
+# Virtual environments & caches
+.venv
+venv
+env
+.hatch
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pyre
+.pytype
+.benchmarks
+.cache
+.coverage
+.coverage.*
+htmlcov
+__pycache__
+*.py[cod]
+*$py.class
+
+# Build artifacts & docs
+build
+dist
+*.egg-info
+docs
+site
+
+# Local environment & compose overrides (prevent leaking secrets/local paths into image)
+.env
+.env.*
+docker-compose*.yaml
+docker-compose*.yml
+compose*.yaml
+compose*.yml
+
+# Local API state
+.dartfx-api
+
+# Temp & OS files
+temp
+tmp
+.DS_Store
+.vscode
+.idea
+*.log

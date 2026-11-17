@@ -1,0 +1,39 @@
+services:
+  dartfx-workspace-api:
+    image: dartfx/dartfx-workspace-api:${IMAGE_TAG:-latest}
+    container_name: ${CONTAINER_NAME:-dartfx-workspace-api}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PYTHONPATH=/app/src/dartfx
+      - UVICORN_PROXY_HEADERS=1
+      - UVICORN_FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-*}
+      - UVICORN_ROOT_PATH=${UVICORN_ROOT_PATH:-}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/cache/registry.db}
+      - DARTFX_STORAGE_ROOT=${DARTFX_STORAGE_ROOT:-/app/cache/storage}
+      - DARTFX_PUBLIC_QUOTA_MB=${DARTFX_PUBLIC_QUOTA_MB:-50}
+      - DARTFX_USER_API_KEY=${DARTFX_USER_API_KEY:-}
+      - DARTFX_ADMIN_API_KEY=${DARTFX_ADMIN_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - dartfx
+
+networks:
+  dartfx:
+    driver: bridge

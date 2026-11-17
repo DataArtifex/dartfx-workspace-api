@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="dartfx-root-path" content="__ROOT_PATH__">
+  <title>Data Artifex Workspace — Canonical Web Client</title>
+  <link rel="stylesheet" href="__ROOT_PATH__/ui/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-logo">⚡</span>
+      <div>
+        <strong>Data Artifex Workspace</strong>
+        <small class="muted">FAIR Data Curation &amp; Knowledge Portal</small>
+      </div>
+    </div>
+
+    <div class="topbar-controls">
+      <a class="nav-pill" href="__ROOT_PATH__/docs" target="_blank" rel="noopener">OpenAPI</a>
+      <a class="nav-pill" href="__ROOT_PATH__/asyncapi.json" target="_blank" rel="noopener">AsyncAPI</a>
+      <button id="theme-toggle" class="btn btn-ghost" title="Toggle Dark/Light Theme">🌓</button>
+      <div id="auth-badge" class="tier-badge tier-anonymous">Anonymous Sandbox</div>
+      <button id="open-auth-modal" class="btn btn-secondary">🔑 API Key</button>
+    </div>
+  </header>
+
+  <section class="context-bar">
+    <div class="context-group">
+      <label for="space-select">Space</label>
+      <select id="space-select"></select>
+    </div>
+    <div class="context-group">
+      <label for="workspace-select">Workspace</label>
+      <select id="workspace-select"></select>
+    </div>
+    <div class="context-meta">
+      <span id="ws-visibility-badge" class="pill">public</span>
+      <span id="ws-ephemeral-badge" class="pill pill-accent hidden">Ephemeral</span>
+      <div class="quota-box">
+        <div class="quota-label">
+          <span>Storage</span>
+          <span id="quota-text">0 B</span>
+        </div>
+        <div class="quota-track"><div id="quota-fill" class="quota-fill"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="files">Files &amp; Upload</button>
+    <button class="tab" data-tab="queries">SPARQL &amp; SQL</button>
+    <button class="tab" data-tab="jobs">Jobs <span id="active-job-count" class="count-badge hidden">0</span></button>
+    <button class="tab admin-only hidden" data-tab="admin">Admin Console</button>
+  </nav>
+
+  <main class="container">
+    <!-- OVERVIEW TAB -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="panel-header">
+        <div>
+          <h2 id="overview-title">Workspace Overview</h2>
+          <p id="overview-path" class="muted mono"></p>
+        </div>
+        <div class="actions-row">
+          <button id="btn-scan" class="btn btn-primary">🔄 Scan Workspace</button>
+          <button id="btn-scan-clean" class="btn btn-secondary">🧹 Clean Rebuild Scan</button>
+          <button id="btn-download-ws-zip" class="btn btn-secondary">📦 Download Workspace (.zip)</button>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card"><span class="stat-label">Total Files</span><strong id="stat-total-files">-</strong></div>
+        <div class="stat-card"><span class="stat-label">Total Size</span><strong id="stat-total-size">-</strong></div>
+        <div class="stat-card"><span class="stat-label">Registered (✔)</span><strong id="stat-registered" class="text-ok">-</strong></div>
+        <div class="stat-card"><span class="stat-label">Unregistered (✘)</span><strong id="stat-unregistered" class="text-warn">-</strong></div>
+      </div>
+
+      <div class="card">
+        <h3>File Type Breakdown</h3>
+        <div id="type-breakdown" class="breakdown-grid"></div>
+      </div>
+    </section>
+
+    <!-- FILES TAB -->
+    <section id="tab-files" class="tab-panel">
+      <div class="panel-header">
+        <div class="breadcrumbs" id="file-breadcrumbs"></div>
+        <div class="actions-row">
+          <button id="btn-mkdir" class="btn btn-secondary">📁 New Folder</button>
+          <button id="btn-download-folder-zip" class="btn btn-secondary">📦 Download Folder (.zip)</button>
+        </div>
+      </div>
+
+      <div id="dropzone" class="dropzone">
+        <div>
+          <strong>Drag &amp; drop files here</strong> to upload into <code id="upload-target-label">/</code>
+          <span class="muted">(automatically scanned &amp; registered in Knowledge Base)</span>
+        </div>
+        <div class="upload-controls">
+          <label class="checkbox-inline"><input type="checkbox" id="upload-overwrite"> Overwrite existing</label>
+          <input type="file" id="file-input" multiple hidden>
+          <button id="btn-browse-upload" class="btn btn-primary">⬆ Select Files</button>
+        </div>
+      </div>
+
+      <div class="filter-bar">
+        <input id="filter-glob" type="search" placeholder="Filter filename glob (e.g. *.csv)">
+        <select id="filter-type">
+          <option value="">All Types</option>
+          <option value="^data">data</option>
+          <option value="metadata">metadata</option>
+          <option value="documentation">documentation</option>
+          <option value="code">code</option>
+          <option value="compressed">compressed</option>
+          <option value="media">media</option>
+          <option value="other">other</option>
+        </select>
+        <input id="filter-format" type="text" placeholder="Format (e.g. csv, parquet)">
+        <select id="filter-registered">
+          <option value="">All Status</option>
+          <option value="true">Registered (✔)</option>
+          <option value="false">Unregistered (✘)</option>
+        </select>
+        <label class="checkbox-inline"><input type="checkbox" id="filter-recursive"> Recursive</label>
+        <button id="btn-refresh-files" class="btn btn-secondary">Apply</button>
+      </div>
+
+      <div class="card table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Reg</th>
+              <th>Name</th>
+              <th>Type / Format</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="files-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- QUERIES TAB -->
+    <section id="tab-queries" class="tab-panel">
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head">
+            <h3>SPARQL Knowledge Base Query</h3>
+            <div class="actions-row">
+              <button class="btn btn-xs btn-secondary sparql-preset" data-preset="all">All Files</button>
+              <button class="btn btn-xs btn-secondary sparql-preset" data-preset="data">Data Assets</button>
+            </div>
+          </div>
+          <textarea id="sparql-input" rows="7">PREFIX dartfx: &lt;https://dataartifex.org/workspace/&gt;
+SELECT ?path ?type ?format ?size WHERE {
+  ?s a dartfx:FileResource ;
+     dartfx:path ?path ;
+     dartfx:fileType ?type ;
+     dartfx:fileFormat ?format ;
+     dartfx:sizeBytes ?size .
+} ORDER BY ?path</textarea>
+          <div class="actions-row mt-sm">
+            <button id="btn-run-sparql" class="btn btn-primary">▶ Run SPARQL</button>
+            <span id="sparql-meta" class="muted"></span>
+          </div>
+          <div id="sparql-results" class="query-results mt-sm"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Tabular SQL Query (CSV / TSV / Parquet)</h3>
+          </div>
+          <textarea id="sql-input" rows="7">SELECT * FROM sample_survey LIMIT 50</textarea>
+          <div class="actions-row mt-sm">
+            <button id="btn-run-sql" class="btn btn-primary">▶ Run SQL</button>
+            <span id="sql-meta" class="muted"></span>
+          </div>
+          <div id="sql-results" class="query-results mt-sm"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- JOBS TAB -->
+    <section id="tab-jobs" class="tab-panel">
+      <div class="panel-header">
+        <h2>Background Jobs &amp; Live Events</h2>
+        <button id="btn-refresh-jobs" class="btn btn-secondary">↻ Refresh Jobs</button>
+      </div>
+      <div id="jobs-list" class="jobs-grid"></div>
+    </section>
+
+    <!-- ADMIN CONSOLE TAB -->
+    <section id="tab-admin" class="tab-panel">
+      <div class="panel-header">
+        <h2>Administrator Console</h2>
+        <div class="actions-row">
+          <button id="btn-reset-ephemeral" class="btn btn-danger">♻ Reset Public Sandbox</button>
+          <button id="btn-wipe-kb" class="btn btn-secondary">🗑 Wipe Selected Workspace KB</button>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <h3>Create Space</h3>
+          <form id="form-create-space" class="stack-form">
+            <input name="slug" placeholder="Slug (e.g. research-team)" required>
+            <input name="name" placeholder="Display Name" required>
+            <input name="description" placeholder="Description">
+            <div class="row-2">
+              <select name="visibility">
+                <option value="private">private</option>
+                <option value="team">team</option>
+                <option value="public">public</option>
+              </select>
+              <input name="quota_mb" type="number" min="1" placeholder="Quota (MB, optional)">
+            </div>
+            <input name="root_path" placeholder="Host root path (optional)">
+            <button type="submit" class="btn btn-primary">Create Space</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>Create / Register Workspace</h3>
+          <form id="form-create-workspace" class="stack-form">
+            <input name="slug" placeholder="Slug (e.g. census-2026)" required>
+            <input name="name" placeholder="Workspace Name" required>
+            <div class="row-2">
+              <select name="space_id" id="admin-ws-space"></select>
+              <select name="visibility">
+                <option value="private">private</option>
+                <option value="team">team</option>
+                <option value="public">public</option>
+              </select>
+            </div>
+            <div class="row-2">
+              <input name="team_id" placeholder="Team ID (optional)">
+              <input name="quota_mb" type="number" min="1" placeholder="Quota (MB, optional)">
+            </div>
+            <input name="path" placeholder="Existing host path (optional)">
+            <button type="submit" class="btn btn-primary">Register / Create Workspace</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="two-col mt-md">
+        <div class="card">
+          <h3>API Key Management</h3>
+          <form id="form-create-key" class="stack-form">
+            <div class="row-2">
+              <input name="label" placeholder="Key label (e.g. Team Alpha)" required>
+              <select name="tier">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+            </div>
+            <div class="row-2">
+              <input name="team_ids" placeholder="Team IDs (comma-separated)">
+              <input name="allowed_space_ids" placeholder="Space IDs (comma-separated)">
+            </div>
+            <button type="submit" class="btn btn-primary">Generate API Key</button>
+          </form>
+          <div id="new-key-banner" class="alert hidden mt-sm"></div>
+          <div id="api-keys-list" class="mt-sm"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>System CLI Tools &amp; Engines</h3>
+            <button id="btn-refresh-tools" class="btn btn-xs btn-secondary">↻ Check</button>
+          </div>
+          <div id="system-tools-list" class="tools-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- RESOURCE INSPECTOR DRAWER -->
+  <aside id="resource-drawer" class="drawer hidden">
+    <div class="drawer-header">
+      <div>
+        <h3 id="drawer-title">Resource Inspector</h3>
+        <small id="drawer-subtitle" class="muted mono"></small>
+      </div>
+      <button id="close-drawer" class="btn btn-ghost">✕</button>
+    </div>
+    <div class="drawer-actions">
+      <button id="drawer-download-btn" class="btn btn-primary btn-sm">⬇ Download File</button>
+      <button id="drawer-fairify-btn" class="btn btn-secondary btn-sm">✨ Fairify</button>
+      <button id="drawer-tocsv-btn" class="btn btn-secondary btn-sm">📄 ToCSV</button>
+    </div>
+    <div class="drawer-tabs">
+      <button class="dtab active" data-dtab="about">About</button>
+      <button class="dtab" data-dtab="preview">Preview (head/tail)</button>
+      <button class="dtab" data-dtab="rdf">RDF Metadata</button>
+    </div>
+    <div class="drawer-body">
+      <div id="dtab-about" class="dtab-panel active"></div>
+      <div id="dtab-preview" class="dtab-panel">
+        <div class="actions-row mb-sm">
+          <select id="preview-mode">
+            <option value="head">Head</option>
+            <option value="tail">Tail</option>
+          </select>
+          <input id="preview-lines" type="number" value="25" min="1" max="500" style="width:80px">
+          <button id="btn-reload-preview" class="btn btn-secondary btn-sm">Load</button>
+        </div>
+        <pre id="preview-content" class="code-box"></pre>
+      </div>
+      <div id="dtab-rdf" class="dtab-panel">
+        <div class="actions-row mb-sm">
+          <select id="rdf-format">
+            <option value="turtle">Turtle (.ttl)</option>
+            <option value="json-ld">JSON-LD (.jsonld)</option>
+            <option value="xml">RDF/XML (.rdf)</option>
+            <option value="n3">N3 (.n3)</option>
+          </select>
+          <button id="btn-reload-rdf" class="btn btn-secondary btn-sm">Load</button>
+          <button id="btn-download-rdf" class="btn btn-primary btn-sm">⬇ Download RDF</button>
+        </div>
+        <pre id="rdf-content" class="code-box"></pre>
+      </div>
+    </div>
+  </aside>
+
+  <!-- API KEY AUTH MODAL -->
+  <div id="auth-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="card-head">
+        <h3>Authentication &amp; API Key</h3>
+        <button id="close-auth-modal" class="btn btn-ghost">✕</button>
+      </div>
+      <p class="muted">
+        Leave empty for <strong>Anonymous Public Sandbox</strong> access, or enter a <strong>User/Team</strong> or <strong>Administrator</strong> API key.
+      </p>
+      <input id="api-key-input" type="password" placeholder="dfx_... or configured API key">
+      <div class="actions-row mt-md">
+        <button id="save-api-key" class="btn btn-primary">Apply Key</button>
+        <button id="clear-api-key" class="btn btn-secondary">Use Anonymous Mode</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST / LIVE JOB PROGRESS BAR -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="__ROOT_PATH__/ui/static/app.js"></script>
+</body>
+</html>
