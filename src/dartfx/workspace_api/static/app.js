@@ -11,7 +11,9 @@
     currentSpaceId: null,
     currentWsId: null,
     currentDir: ".",
+    currentTab: "overview",
     currentResource: null,
+    lastFiles: [],
     eventSources: new Map(),
   };
 
@@ -86,6 +88,202 @@
     });
   }
 
+  let isPopstateHandling = false;
+  let lastHandledHash = window.location.hash;
+
+  function parseHash() {
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    if (!hash) {
+      return { tab: "overview", ws: null, dir: ".", space: null, file: null };
+    }
+    const [pathPart, queryPart] = hash.split("?");
+    const tab = pathPart || "overview";
+    const params = new URLSearchParams(queryPart || "");
+    return {
+      tab: tab || "overview",
+      ws: params.get("ws") || null,
+      dir: params.get("dir") || ".",
+      space: params.get("space") || null,
+      file: params.get("file") || null,
+    };
+  }
+
+  function buildHash(override = {}) {
+    const tab = override.tab !== undefined ? override.tab : state.currentTab || "overview";
+    const ws = override.ws !== undefined ? override.ws : state.currentWsId;
+    const dir = override.dir !== undefined ? override.dir : state.currentDir;
+    const space = override.space !== undefined ? override.space : state.currentSpaceId;
+    const file =
+      override.file !== undefined ? override.file : state.currentResource ? state.currentResource.path : null;
+
+    const params = new URLSearchParams();
+    if (ws) params.set("ws", ws);
+    if (space) params.set("space", space);
+    if (tab === "files" && dir && dir !== "." && dir !== "/") params.set("dir", dir);
+    if (file) params.set("file", file);
+
+    const qs = params.toString();
+    return `#/${tab}${qs ? "?" + qs : ""}`;
+  }
+
+  function syncUrl(push = true) {
+    if (isPopstateHandling) return;
+    const targetHash = buildHash();
+    if (window.location.hash === targetHash) return;
+    lastHandledHash = targetHash;
+    if (push) {
+      history.pushState({ tab: state.currentTab, ws: state.currentWsId, dir: state.currentDir }, "", targetHash);
+    } else {
+      history.replaceState({ tab: state.currentTab, ws: state.currentWsId, dir: state.currentDir }, "", targetHash);
+    }
+  }
+
+  function switchTab(tabName, push = true) {
+    const validTabs = ["overview", "files", "queries", "jobs", "admin"];
+    let targetTab = validTabs.includes(tabName) ? tabName : "overview";
+    if (targetTab === "admin" && state.principal.tier !== "admin") targetTab = "overview";
+
+    const btn = document.querySelector(`.tab[data-tab="${targetTab}"]`);
+    const panel = $(`tab-${targetTab}`);
+    if (!btn || !panel) return;
+
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    panel.classList.add("active");
+    state.currentTab = targetTab;
+
+    if (targetTab === "admin") loadAdminData();
+    if (push) syncUrl(true);
+  }
+
+  function navigateToDir(dirPath, push = true) {
+    if (state.currentResource) closeResourceDrawer(false);
+    state.currentDir = dirPath || ".";
+    loadFiles();
+    if (push) syncUrl(true);
+  }
+
+  function closeResourceDrawer(updateHistory = true) {
+    state.currentResource = null;
+    $("resource-drawer").classList.add("hidden");
+    if (updateHistory && !isPopstateHandling) {
+      if (history.state && history.state.drawerOpened) {
+        history.back();
+      } else {
+        syncUrl(true);
+      }
+    }
+  }
+
+  async function openFileByPath(filePath) {
+    if (!state.currentWsId || !filePath) return;
+    const fileName = filePath.split("/").pop() || filePath;
+    let entry = (state.lastFiles || []).find((f) => f.path === filePath);
+    if (!entry) {
+      try {
+        const detail = await apiFetch(`/workspaces/${state.currentWsId}/resources/${encodeURIComponent(filePath)}`);
+        entry = {
+          name: fileName,
+          path: detail.path,
+          uuid: detail.uuid,
+          is_dir: false,
+          registered: true,
+          file_format: detail.file_format,
+          file_type: detail.type,
+          size_bytes: detail.size_bytes,
+        };
+      } catch (_) {
+        entry = {
+          name: fileName,
+          path: filePath,
+          is_dir: false,
+          registered: false,
+        };
+      }
+    }
+    await openResourceDrawer(entry, false);
+  }
+
+  async function applyNavState(nav, isInit = false) {
+    isPopstateHandling = true;
+    try {
+      // 1. Space
+      const targetSpace = nav.space || null;
+      if (targetSpace !== state.currentSpaceId) {
+        state.currentSpaceId = targetSpace;
+        const spaceSelect = $("space-select");
+        if (spaceSelect) spaceSelect.value = targetSpace || "";
+        populateWorkspaceSelect(false);
+      }
+
+      // 2. Workspace
+      let wsChanged = false;
+      const targetWs = nav.ws;
+      if (targetWs && targetWs !== state.currentWsId) {
+        const match = state.workspaces.find((w) => w.id === targetWs || w.slug === targetWs);
+        if (match) {
+          state.currentWsId = match.id;
+          const wsSelect = $("workspace-select");
+          if (wsSelect) wsSelect.value = match.id;
+          wsChanged = true;
+        }
+      }
+
+      // 3. Tab
+      const validTabs = ["overview", "files", "queries", "jobs", "admin"];
+      let targetTab = validTabs.includes(nav.tab) ? nav.tab : "overview";
+      if (targetTab === "admin" && state.principal.tier !== "admin") targetTab = "overview";
+
+      if (targetTab !== state.currentTab || isInit) {
+        state.currentTab = targetTab;
+        document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+        const tabBtn = document.querySelector(`.tab[data-tab="${targetTab}"]`);
+        const tabPanel = $(`tab-${targetTab}`);
+        if (tabBtn && tabPanel) {
+          tabBtn.classList.add("active");
+          tabPanel.classList.add("active");
+          if (targetTab === "admin") loadAdminData();
+        }
+      }
+
+      // 4. Directory in files tab
+      const targetDir = nav.dir || ".";
+      let dirChanged = false;
+      if (targetDir !== state.currentDir) {
+        state.currentDir = targetDir;
+        dirChanged = true;
+      }
+
+      if (wsChanged) {
+        await refreshWorkspaceData();
+      } else if (dirChanged && state.currentTab === "files") {
+        await loadFiles();
+      }
+
+      // 5. File drawer
+      if (nav.file) {
+        if (!state.currentResource || state.currentResource.path !== nav.file) {
+          await openFileByPath(nav.file);
+        }
+      } else {
+        if (state.currentResource) {
+          closeResourceDrawer(false);
+        }
+      }
+    } finally {
+      isPopstateHandling = false;
+    }
+  }
+
+  async function handleLocationChange() {
+    if (window.location.hash === lastHandledHash) return;
+    lastHandledHash = window.location.hash;
+    const nav = parseHash();
+    await applyNavState(nav, false);
+  }
+
   async function loadSpacesAndWorkspaces() {
     state.spaces = await apiFetch("/spaces");
     state.workspaces = await apiFetch("/workspaces");
@@ -109,10 +307,10 @@
     });
 
     if (state.currentSpaceId) spaceSelect.value = state.currentSpaceId;
-    populateWorkspaceSelect();
+    populateWorkspaceSelect(true);
   }
 
-  function populateWorkspaceSelect() {
+  function populateWorkspaceSelect(autoRefresh = true) {
     const wsSelect = $("workspace-select");
     const filtered = state.currentSpaceId
       ? state.workspaces.filter((w) => w.space_id === state.currentSpaceId)
@@ -132,7 +330,7 @@
         state.currentDir = ".";
       }
       wsSelect.value = state.currentWsId;
-      refreshWorkspaceData();
+      if (autoRefresh) refreshWorkspaceData();
     } else {
       state.currentWsId = null;
     }
@@ -191,8 +389,7 @@
     rootBtn.className = "crumb";
     rootBtn.textContent = "/";
     rootBtn.onclick = () => {
-      state.currentDir = ".";
-      loadFiles();
+      navigateToDir(".");
     };
     container.appendChild(rootBtn);
 
@@ -204,8 +401,7 @@
       btn.className = "crumb";
       btn.textContent = p;
       btn.onclick = () => {
-        state.currentDir = target;
-        loadFiles();
+        navigateToDir(target);
       };
       container.appendChild(btn);
     });
@@ -223,6 +419,7 @@
     if ($("filter-registered").value) params.set("registered", $("filter-registered").value);
 
     const entries = await apiFetch(`/workspaces/${state.currentWsId}/files?${params.toString()}`);
+    state.lastFiles = entries;
     const tbody = $("files-tbody");
     tbody.innerHTML = "";
 
@@ -263,10 +460,9 @@
 
       tr.querySelector(".file-link").onclick = () => {
         if (entry.is_dir) {
-          state.currentDir = entry.path;
-          loadFiles();
+          navigateToDir(entry.path);
         } else {
-          openResourceDrawer(entry);
+          openResourceDrawer(entry, true);
         }
       };
 
@@ -322,7 +518,7 @@
     }
   }
 
-  async function openResourceDrawer(entry) {
+  async function openResourceDrawer(entry, push = true) {
     state.currentResource = entry;
     $("resource-drawer").classList.remove("hidden");
     $("drawer-title").textContent = entry.name;
@@ -368,6 +564,10 @@
     loadPreview();
     if (entry.registered && entry.uuid) loadRdf();
     else $("rdf-content").textContent = "Resource is not registered in Knowledge Base.";
+
+    if (push && !isPopstateHandling) {
+      history.pushState({ drawerOpened: true }, "", buildHash({ file: entry.path }));
+    }
   }
 
   async function loadPreview() {
@@ -561,13 +761,17 @@
   }
 
   // Event bindings
+  window.addEventListener("popstate", handleLocationChange);
+  window.addEventListener("hashchange", handleLocationChange);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.currentResource) {
+      closeResourceDrawer(true);
+    }
+  });
+
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.onclick = () => {
-      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      $(`tab-${btn.dataset.tab}`).classList.add("active");
-      if (btn.dataset.tab === "admin") loadAdminData();
+      switchTab(btn.dataset.tab, true);
     };
   });
 
@@ -607,11 +811,14 @@
   $("space-select").onchange = (e) => {
     state.currentSpaceId = e.target.value || null;
     populateWorkspaceSelect();
+    syncUrl(true);
   };
   $("workspace-select").onchange = (e) => {
     state.currentWsId = e.target.value;
     state.currentDir = ".";
+    if (state.currentResource) closeResourceDrawer(false);
     refreshWorkspaceData();
+    syncUrl(true);
   };
 
   $("btn-scan").onclick = () => triggerScan(false);
@@ -655,7 +862,7 @@
     uploadFiles(e.dataTransfer.files);
   };
 
-  $("close-drawer").onclick = () => $("resource-drawer").classList.add("hidden");
+  $("close-drawer").onclick = () => closeResourceDrawer(true);
   $("btn-reload-preview").onclick = loadPreview;
   $("btn-reload-rdf").onclick = loadRdf;
   $("btn-download-rdf").onclick = () => {
@@ -813,7 +1020,16 @@
 
   async function bootstrap() {
     await refreshWhoami();
+    const nav = parseHash();
+    if (nav.space) state.currentSpaceId = nav.space;
+    if (nav.ws) state.currentWsId = nav.ws;
+    if (nav.dir) state.currentDir = nav.dir;
+    if (nav.tab) state.currentTab = nav.tab;
+
     await loadSpacesAndWorkspaces();
+    await applyNavState(nav, true);
+    syncUrl(false);
+
     if (state.principal.tier === "admin") loadAdminData();
   }
 

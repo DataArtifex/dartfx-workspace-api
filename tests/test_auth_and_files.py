@@ -80,6 +80,7 @@ def test_three_tier_access_and_api_key_lifecycle(client: TestClient) -> None:
     )
     assert key_res.status_code == 201
     alice_key = key_res.json()["key"]
+    assert alice_key.startswith("dartfx_")
     key_id = key_res.json()["info"]["id"]
 
     # 3. Anonymous cannot access team or private workspaces

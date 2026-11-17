@@ -354,11 +354,11 @@ def create_api_key(
     session: Session = Depends(get_db_session),
 ) -> ApiKeyCreateResponse:
     """Generate and persist a new API key (raw secret is returned once)."""
-    raw_key = generate_api_key(prefix="dfx")
+    raw_key = generate_api_key(prefix="dartfx")
     key_id = str(uuid.uuid4())
     rec = ApiKeyRecord(
         id=key_id,
-        key_prefix=raw_key[:12],
+        key_prefix=raw_key[:15],
         key_hash=hash_api_key(raw_key),
         label=payload.label,
         tier=payload.tier.value,

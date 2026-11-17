@@ -27,6 +27,18 @@ A FastAPI microservice and canonical HTML web client for **Data Artifex Workspac
 
 ## Local Development
 
+### Monorepo Environment (Recommended)
+
+When working inside the Data Artifex monorepo, run using the shared root virtual environment with `--no-sync` (which avoids re-syncing the monorepo root environment and avoids cloud-storage lock delays):
+
+```bash
+PYTHONPATH=src/dartfx uv run --no-sync uvicorn workspace_api.main:app --reload --port 8000
+```
+
+### Standalone Environment
+
+When working outside the monorepo in an isolated repository:
+
 ```bash
 uv sync --group dev
 PYTHONPATH=src/dartfx uv run uvicorn workspace_api.main:app --reload --port 8000

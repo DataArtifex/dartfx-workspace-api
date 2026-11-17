@@ -177,7 +177,16 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
             return HTMLResponse("<h1>Web client assets missing.</h1>", status_code=404)
         content = index_file.read_text(encoding="utf-8")
         content = content.replace("__ROOT_PATH__", root_path)
-        return HTMLResponse(content=content)
+
+        app_js = STATIC_DIR / "app.js"
+        asset_v = str(int(app_js.stat().st_mtime)) if app_js.exists() else __version__
+        content = content.replace("/ui/static/app.js", f"/ui/static/app.js?v={asset_v}")
+        content = content.replace("/ui/static/styles.css", f"/ui/static/styles.css?v={asset_v}")
+
+        return HTMLResponse(
+            content=content,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     return application
 

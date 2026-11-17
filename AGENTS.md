@@ -21,8 +21,8 @@ See @SPECIFICATIONS.md and @IMPLEMENTATION.md
 ## Rapid Commands
 
 ```bash
-# Local dev server
-PYTHONPATH=src/dartfx uv run uvicorn workspace_api.main:app --reload --port 8000
+# Local dev server (monorepo)
+PYTHONPATH=src/dartfx uv run --no-sync uvicorn workspace_api.main:app --reload --port 8000
 
 # Docker Compose deployment
 cp .env.example .env
