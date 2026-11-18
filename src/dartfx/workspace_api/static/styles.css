@@ -429,6 +429,18 @@ tr.artifact-row .file-link:hover {
   color: var(--accent);
 }
 
+tr.artifact-row .pill {
+  font-size: 10px;
+  padding: 0.1rem 0.4rem;
+  opacity: 0.75;
+}
+
+tr.artifact-row .badge-system {
+  font-size: 10px;
+  padding: 0.1rem 0.45rem;
+  opacity: 0.75;
+}
+
 .artifact-toggle-btn {
   display: inline-flex;
   align-items: center;

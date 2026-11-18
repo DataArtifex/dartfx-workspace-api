@@ -438,11 +438,11 @@
       return;
     }
 
-    // Group system-generated artifacts under their parent dataset when viewing "all"
+    // Group system-generated artifacts under their parent dataset when viewing "all" / unfiltered
     const childrenByParent = new Map();
     const topLevelEntries = [];
 
-    if (originFilter === "all") {
+    if (!originFilter || originFilter === "all") {
       const userFiles = entries.filter((e) => !e.is_dir && !e.is_generated);
       const byUuid = new Map();
       userFiles.forEach((u) => {
@@ -455,8 +455,7 @@
           return byUuid.get(artifact.source_uuid);
         }
         return userFiles.find((u) => {
-          const dotIdx = u.name.lastIndexOf(".");
-          const stem = dotIdx > 0 ? u.name.slice(0, dotIdx) : u.name;
+          const stem = u.name.replace(/\.[^/.]+$/, "");
           return artifact.name.startsWith(`${u.name}.`) || artifact.name.startsWith(`${stem}.`);
         });
       };
