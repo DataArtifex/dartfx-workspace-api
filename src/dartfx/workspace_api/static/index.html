@@ -119,6 +119,11 @@
           <option value="other">other</option>
         </select>
         <input id="filter-format" type="text" placeholder="Format (e.g. csv, parquet)">
+        <select id="filter-origin">
+          <option value="">All Origins</option>
+          <option value="user">User Files</option>
+          <option value="system">System Generated</option>
+        </select>
         <select id="filter-registered">
           <option value="">All Status</option>
           <option value="true">Registered (✔)</option>
@@ -135,6 +140,7 @@
               <th>Reg</th>
               <th>Name</th>
               <th>Type / Format</th>
+              <th>Origin</th>
               <th>Size</th>
               <th>Modified</th>
               <th>Actions</th>

@@ -418,13 +418,19 @@
     if ($("filter-format").value.trim()) params.set("format", $("filter-format").value.trim());
     if ($("filter-registered").value) params.set("registered", $("filter-registered").value);
 
-    const entries = await apiFetch(`/workspaces/${state.currentWsId}/files?${params.toString()}`);
+    const originFilter = $("filter-origin") ? $("filter-origin").value : "";
+    let entries = await apiFetch(`/workspaces/${state.currentWsId}/files?${params.toString()}`);
+    if (originFilter === "user") {
+      entries = entries.filter((e) => e.is_dir || !e.is_generated);
+    } else if (originFilter === "system") {
+      entries = entries.filter((e) => !e.is_dir && e.is_generated);
+    }
     state.lastFiles = entries;
     const tbody = $("files-tbody");
     tbody.innerHTML = "";
 
     if (entries.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="muted">No files match the current path or filters.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">No files match the current path or filters.</td></tr>`;
       return;
     }
 
@@ -437,14 +443,24 @@
           ? `${entry.file_type}/${entry.file_format}`
           : entry.file_type;
 
+      const originBadge = entry.is_dir
+        ? "-"
+        : entry.is_generated
+          ? `<span class="badge badge-system" title="System-generated artifact${entry.generated_by ? ' by ' + entry.generated_by : ''}">System</span>`
+          : `<span class="badge badge-user" title="User-provided file">User</span>`;
+
+      const applicable = Array.isArray(entry.applicable_actions) && entry.applicable_actions.length > 0
+        ? entry.applicable_actions
+        : (entry.is_dir ? ["download", "delete"] : ["preview", "download", "delete"]);
+
       const actions = [];
       if (!entry.is_dir) {
         actions.push(`<button class="btn btn-xs btn-secondary act-dl" title="Download">⬇</button>`);
-        if (["csv", "parquet", "pq"].includes(entry.file_format)) {
-          actions.push(`<button class="btn btn-xs btn-secondary act-fairify" title="Run Fairify">✨</button>`);
+        if (applicable.includes("fairify")) {
+          actions.push(`<button class="btn btn-xs btn-secondary act-fairify" title="Run Fairify (qsv)">✨</button>`);
         }
-        if (["sav", "dta", "sas7bdat", "por", "xpt", "zsav"].includes(entry.file_format)) {
-          actions.push(`<button class="btn btn-xs btn-secondary act-tocsv" title="Convert to CSV">📄</button>`);
+        if (applicable.includes("tocsv")) {
+          actions.push(`<button class="btn btn-xs btn-secondary act-tocsv" title="Convert to CSV (readstat)">📄</button>`);
         }
       }
       actions.push(`<button class="btn btn-xs btn-danger act-del" title="Delete">🗑</button>`);
@@ -453,6 +469,7 @@
         <td>${regBadge}</td>
         <td><button class="file-link">${entry.is_dir ? "📁 " : "📄 "}${entry.name}${entry.is_dir ? "/" : ""}</button></td>
         <td><span class="pill">${typeLabel}</span></td>
+        <td>${originBadge}</td>
         <td>${entry.is_dir ? "-" : fmtBytes(entry.size_bytes)}</td>
         <td class="muted">${new Date(entry.modified_at).toLocaleString()}</td>
         <td><div class="actions-row">${actions.join("")}</div></td>
@@ -524,13 +541,26 @@
     $("drawer-title").textContent = entry.name;
     $("drawer-subtitle").textContent = entry.path;
 
+    const applicable = Array.isArray(entry.applicable_actions) ? entry.applicable_actions : [];
+    const canFairify = applicable.includes("fairify");
+    const canToCsv = applicable.includes("tocsv");
+
+    const fairifyBtn = $("drawer-fairify-btn");
+    if (fairifyBtn) {
+      fairifyBtn.style.display = canFairify ? "inline-flex" : "none";
+      fairifyBtn.onclick = () => triggerFairify(entry.path);
+    }
+    const tocsvBtn = $("drawer-tocsv-btn");
+    if (tocsvBtn) {
+      tocsvBtn.style.display = canToCsv ? "inline-flex" : "none";
+      tocsvBtn.onclick = () => triggerToCsv(entry.path);
+    }
+
     $("drawer-download-btn").onclick = () => {
       window.location.href = downloadUrl(
         `/workspaces/${state.currentWsId}/files/download?path=${encodeURIComponent(entry.path)}`
       );
     };
-    $("drawer-fairify-btn").onclick = () => triggerFairify(entry.path);
-    $("drawer-tocsv-btn").onclick = () => triggerToCsv(entry.path);
 
     const aboutEl = $("dtab-about");
     if (entry.registered) {
@@ -538,6 +568,21 @@
         const detail = await apiFetch(
           `/workspaces/${state.currentWsId}/resources/${encodeURIComponent(entry.uuid || entry.path)}`
         );
+        const detailActions = Array.isArray(detail.applicable_actions) ? detail.applicable_actions : applicable;
+        const detailCanFairify = detailActions.includes("fairify");
+        const detailCanToCsv = detailActions.includes("tocsv");
+        if (fairifyBtn) fairifyBtn.style.display = detailCanFairify ? "inline-flex" : "none";
+        if (tocsvBtn) tocsvBtn.style.display = detailCanToCsv ? "inline-flex" : "none";
+
+        const originRow = `<tr><td class="muted">Origin</td><td>${
+          detail.is_generated
+            ? `<span class="badge badge-system">System Generated${detail.generated_by ? " (" + detail.generated_by + ")" : ""}</span>`
+            : '<span class="badge badge-user">User Provided</span>'
+        }</td></tr>`;
+        const applicableRow = `<tr><td class="muted">Applicable Actions</td><td>${
+          detailActions.map((a) => `<span class="pill-action">${a}</span>`).join(" ") || "-"
+        }</td></tr>`;
+
         const attrRows = Object.entries(detail.attributes || {})
           .map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${v}</td></tr>`)
           .join("");
@@ -545,6 +590,8 @@
           <table class="kv-table">
             <tr><td class="muted">UUID</td><td class="mono">${detail.uuid}</td></tr>
             <tr><td class="muted">Path</td><td class="mono">${detail.path}</td></tr>
+            ${originRow}
+            ${applicableRow}
             <tr><td class="muted">Type</td><td>${detail.type}</td></tr>
             <tr><td class="muted">Format</td><td>${detail.file_format}</td></tr>
             <tr><td class="muted">MIME</td><td>${detail.mime_type || "-"}</td></tr>

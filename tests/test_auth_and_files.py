@@ -128,6 +128,34 @@ def test_file_upload_download_archive_and_quota_enforcement(client: TestClient) 
     assert uploaded["path"] == "data/metrics.csv"
     assert uploaded["registered"] is True
     assert uploaded["uuid"] is not None
+    assert uploaded["is_generated"] is False
+    assert "fairify" in uploaded["applicable_actions"]
+    assert "tocsv" not in uploaded["applicable_actions"]
+
+    # Upload system-generated artifact and verify fairify rejection
+    gen_upload_res = client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "false", "auto_scan": "true"},
+        files=[("files", ("metrics.stats.csv", b"col,type\nx,int\n", "text/csv"))],
+    )
+    assert gen_upload_res.status_code == 201
+    gen_uploaded = gen_upload_res.json()[0]
+    assert gen_uploaded["is_generated"] is True
+    assert "fairify" not in gen_uploaded["applicable_actions"]
+
+    bad_fairify = client.post(
+        "/workspaces/sandbox/fairify",
+        json={"source_path": "data/metrics.stats.csv"},
+    )
+    assert bad_fairify.status_code == 400
+    assert "Cannot fairify system-generated artifact" in bad_fairify.json()["detail"]
+
+    bad_readstat = client.post(
+        "/workspaces/sandbox/readstat",
+        json={"source_path": "data/metrics.csv", "to_csv": True},
+    )
+    assert bad_readstat.status_code == 400
+    assert "Unsupported format for readstat/to_csv" in bad_readstat.json()["detail"]
 
     # Exceeding public quota (4096 bytes in test fixture) returns 413
     oversized_res = client.post(

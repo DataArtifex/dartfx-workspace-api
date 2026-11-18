@@ -8,6 +8,13 @@ from dartfx.workspace.access import AccessPolicy
 from dartfx.workspace.core import Workspace
 from dartfx.workspace.models import Action, Principal, TaskEvent, TaskType, WorkspaceStats
 from dartfx.workspace.spaces import Space
+from dartfx.workspace.utils import (
+    SUPPORTED_FAIRIFY_SUFFIXES,
+    SUPPORTED_READSTAT_SUFFIXES,
+    detect_system_generated,
+    is_fairifiable_file,
+    is_statistical_file,
+)
 from workspace_api.db import space_record_to_config, workspace_record_to_config
 from workspace_api.dependencies import (
     get_current_principal,
@@ -225,6 +232,31 @@ async def trigger_fairify(
         target = auth_ws.workspace.resolve_safe_path(payload.source_path)
         if not target.exists() or not target.is_file():
             raise FileNotFoundError(f"Source file not found: {payload.source_path}")
+
+        source_is_gen, _ = detect_system_generated(target)
+        if auth_ws.workspace.is_initialized():
+            rel_str = target.relative_to(auth_ws.workspace.path).as_posix()
+            kb_entry = auth_ws.workspace.kb.get_file_by_path(rel_str)
+            if kb_entry and kb_entry.get("is_generated"):
+                source_is_gen = True
+
+        if source_is_gen:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot fairify system-generated artifact '{payload.source_path}'. "
+                    "Only user-provided tabular files can be FAIRified."
+                ),
+            )
+
+        if not is_fairifiable_file(target, is_generated=source_is_gen):
+            allowed = "|".join(ext.lstrip(".") for ext in sorted(SUPPORTED_FAIRIFY_SUFFIXES))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported format for fairify: '{target.suffix}'. Expected one of: {allowed}",
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise map_domain_error(exc) from exc
 
@@ -263,8 +295,21 @@ async def trigger_readstat(
         target = auth_ws.workspace.resolve_safe_path(payload.source_path)
         if not target.exists() or not target.is_file():
             raise FileNotFoundError(f"Source file not found: {payload.source_path}")
+
+        if not is_statistical_file(target):
+            allowed = "|".join(ext.lstrip(".") for ext in sorted(SUPPORTED_READSTAT_SUFFIXES))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Unsupported format for readstat/to_csv: '{target.suffix}'. "
+                    f"Expected one of: {allowed} (SAS, Stata, SPSS)."
+                ),
+            )
+
         if payload.output_path:
             auth_ws.workspace.resolve_safe_path(payload.output_path)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise map_domain_error(exc) from exc
 
