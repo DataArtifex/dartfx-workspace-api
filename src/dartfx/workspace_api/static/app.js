@@ -14,6 +14,7 @@
     currentTab: "overview",
     currentResource: null,
     lastFiles: [],
+    expandedArtifactParents: new Set(),
     eventSources: new Map(),
   };
 
@@ -437,8 +438,48 @@
       return;
     }
 
-    entries.forEach((entry) => {
+    // Group system-generated artifacts under their parent dataset when viewing "all"
+    const childrenByParent = new Map();
+    const topLevelEntries = [];
+
+    if (originFilter === "all") {
+      const userFiles = entries.filter((e) => !e.is_dir && !e.is_generated);
+      const byUuid = new Map();
+      userFiles.forEach((u) => {
+        if (u.uuid) byUuid.set(u.uuid, u);
+        childrenByParent.set(u.path, []);
+      });
+
+      const findParent = (artifact) => {
+        if (artifact.source_uuid && byUuid.has(artifact.source_uuid)) {
+          return byUuid.get(artifact.source_uuid);
+        }
+        return userFiles.find((u) => {
+          const dotIdx = u.name.lastIndexOf(".");
+          const stem = dotIdx > 0 ? u.name.slice(0, dotIdx) : u.name;
+          return artifact.name.startsWith(`${u.name}.`) || artifact.name.startsWith(`${stem}.`);
+        });
+      };
+
+      entries.forEach((entry) => {
+        if (!entry.is_dir && entry.is_generated) {
+          const parent = findParent(entry);
+          if (parent) {
+            childrenByParent.get(parent.path).push(entry);
+            return;
+          }
+        }
+        topLevelEntries.push(entry);
+      });
+    } else {
+      topLevelEntries.push(...entries);
+    }
+
+    function buildFileRow(entry, { isChild = false, childCount = 0, isExpanded = false } = {}) {
       const tr = document.createElement("tr");
+      if (isChild) tr.classList.add("artifact-row");
+      if (isChild && !isExpanded) tr.classList.add("hidden");
+
       const regBadge = entry.is_dir ? "-" : entry.registered ? `<span class="text-ok">✔</span>` : `<span class="text-warn">✘</span>`;
       const typeLabel = entry.is_dir
         ? "directory"
@@ -456,7 +497,7 @@
       const originBadge = entry.is_dir
         ? "-"
         : (entry.is_generated
-            ? `<span class="badge badge-system" title="System-generated artifact${entry.generated_by ? ' by ' + entry.generated_by : ''}">System</span>`
+            ? `<span class="badge badge-system" title="System-generated artifact${entry.generated_by ? " by " + entry.generated_by : ""}">System</span>`
             : `<span class="badge badge-user" title="User-provided file">User</span>`) + fairifyBadge;
 
       const applicable = Array.isArray(entry.applicable_actions) && entry.applicable_actions.length > 0
@@ -475,9 +516,17 @@
       }
       actions.push(`<button class="btn btn-xs btn-danger act-del" title="Delete">🗑</button>`);
 
+      const toggleHtml = childCount > 0
+        ? `<button class="artifact-toggle-btn" title="Show/hide ${childCount} generated artifact(s)">${isExpanded ? "▾" : "▸"} ${childCount}</button>`
+        : "";
+
+      const nameCellContent = isChild
+        ? `<span class="artifact-indent"><span class="artifact-connector">↳</span><button class="file-link">📄 ${entry.name}</button></span>`
+        : `<button class="file-link">${entry.is_dir ? "📁 " : "📄 "}${entry.name}${entry.is_dir ? "/" : ""}</button>${toggleHtml}`;
+
       tr.innerHTML = `
         <td>${regBadge}</td>
-        <td><button class="file-link">${entry.is_dir ? "📁 " : "📄 "}${entry.name}${entry.is_dir ? "/" : ""}</button></td>
+        <td>${nameCellContent}</td>
         <td><span class="pill">${typeLabel}</span></td>
         <td>${originBadge}</td>
         <td>${entry.is_dir ? "-" : fmtBytes(entry.size_bytes)}</td>
@@ -509,19 +558,58 @@
       if (tocsvBtn) tocsvBtn.onclick = () => triggerToCsv(entry.path);
 
       tr.querySelector(".act-del").onclick = async () => {
-        if (!confirm(`Delete '${entry.path}'?`)) return;
+        const confirmMsg = entry.fairify_status
+          ? `Delete '${entry.path}' and any related FAIRification artifacts?`
+          : `Delete '${entry.path}'?`;
+        if (!confirm(confirmMsg)) return;
         try {
-          await apiFetch(`/workspaces/${state.currentWsId}/files?path=${encodeURIComponent(entry.path)}`, {
+          const res = await apiFetch(`/workspaces/${state.currentWsId}/files?path=${encodeURIComponent(entry.path)}`, {
             method: "DELETE",
           });
-          toast(`Deleted ${entry.path}`);
+          const extra =
+            res && res.deleted_artifacts && res.deleted_artifacts.length > 0
+              ? ` and ${res.deleted_artifacts.length} related artifact(s)`
+              : "";
+          toast(`Deleted ${entry.path}${extra}`);
           refreshWorkspaceData();
         } catch (err) {
           toast(err.message, true);
         }
       };
 
-      tbody.appendChild(tr);
+      return tr;
+    }
+
+    topLevelEntries.forEach((entry) => {
+      const children = childrenByParent.get(entry.path) || [];
+      const isExpanded = state.expandedArtifactParents.has(entry.path);
+      const parentRow = buildFileRow(entry, {
+        isChild: false,
+        childCount: children.length,
+        isExpanded,
+      });
+      tbody.appendChild(parentRow);
+
+      const childRows = children.map((child) => {
+        const childRow = buildFileRow(child, { isChild: true, isExpanded });
+        tbody.appendChild(childRow);
+        return childRow;
+      });
+
+      const toggleBtn = parentRow.querySelector(".artifact-toggle-btn");
+      if (toggleBtn) {
+        toggleBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const nowExpanded = !state.expandedArtifactParents.has(entry.path);
+          if (nowExpanded) {
+            state.expandedArtifactParents.add(entry.path);
+          } else {
+            state.expandedArtifactParents.delete(entry.path);
+          }
+          toggleBtn.textContent = `${nowExpanded ? "▾" : "▸"} ${children.length}`;
+          childRows.forEach((r) => r.classList.toggle("hidden", !nowExpanded));
+        };
+      }
     });
   }
 
@@ -607,6 +695,9 @@
           fairifyStatusRow = `<tr><td class="muted">FAIRify Status</td><td><span class="badge badge-fairify-stale">FAIRify Outdated ⚠️ (modified after generation)</span></td></tr>`;
         }
 
+        const sourceRow = detail.source_uuid
+          ? `<tr><td class="muted">Source Dataset</td><td class="mono">${detail.source_uuid}</td></tr>`
+          : "";
         const originRow = `<tr><td class="muted">Origin</td><td>${
           detail.is_generated
             ? `<span class="badge badge-system">System Generated${detail.generated_by ? " (" + detail.generated_by + ")" : ""}</span>`
@@ -623,6 +714,7 @@
           <table class="kv-table">
             <tr><td class="muted">UUID</td><td class="mono">${detail.uuid}</td></tr>
             <tr><td class="muted">Path</td><td class="mono">${detail.path}</td></tr>
+            ${sourceRow}
             ${originRow}
             ${fairifyStatusRow}
             ${applicableRow}

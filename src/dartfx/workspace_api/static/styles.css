@@ -391,3 +391,56 @@ tr:hover td { background: var(--surface-alt); }
   font-size: 11px;
   font-family: var(--mono);
 }
+
+tr.artifact-row {
+  background: rgba(148, 163, 184, 0.04);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+tr.artifact-row td {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+tr.artifact-row .artifact-indent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-left: 1.5rem;
+}
+
+tr.artifact-row .artifact-connector {
+  color: var(--border);
+  font-family: var(--mono);
+  user-select: none;
+}
+
+tr.artifact-row .file-link {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+tr.artifact-row .file-link:hover {
+  color: var(--accent);
+}
+
+.artifact-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: 0.45rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.artifact-toggle-btn:hover {
+  background: rgba(168, 85, 247, 0.24);
+}

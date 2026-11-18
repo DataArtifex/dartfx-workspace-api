@@ -228,3 +228,123 @@ def test_file_upload_download_archive_and_quota_enforcement(client: TestClient) 
     reset_res = client.post("/admin/ephemeral/reset", headers={"X-API-Key": ADMIN_KEY})
     assert reset_res.status_code == 200
     assert client.get("/workspaces/sandbox/files/download", params={"path": "data/metrics.csv"}).status_code == 404
+
+
+def test_file_delete_cascades_artifacts(client: TestClient) -> None:
+    # Upload sample file and its sidecar artifact
+    csv_bytes = b"id,val\n1,10\n"
+    stats_bytes = b"stats_data"
+    client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true", "auto_scan": "true"},
+        files={"files": ("cascading_test.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+    client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true", "auto_scan": "true"},
+        files={"files": ("cascading_test.csv.stats.csv", io.BytesIO(stats_bytes), "text/csv")},
+    )
+
+    files_res = client.get("/workspaces/sandbox/files", params={"path": "data"}).json()
+    paths = {f["path"] for f in files_res}
+    assert "data/cascading_test.csv" in paths
+    assert "data/cascading_test.csv.stats.csv" in paths
+
+    # Delete with delete_artifacts=True
+    del_res = client.delete(
+        "/workspaces/sandbox/files",
+        params={"path": "data/cascading_test.csv", "delete_artifacts": True},
+    )
+    assert del_res.status_code == 200
+    del_data = del_res.json()
+    assert del_data["status"] == "deleted"
+    assert "data/cascading_test.csv.stats.csv" in del_data["deleted_artifacts"]
+
+    # Verify both are gone from file listing
+    files_after = client.get("/workspaces/sandbox/files", params={"path": "data"}).json()
+    paths_after = {f["path"] for f in files_after}
+    assert "data/cascading_test.csv" not in paths_after
+    assert "data/cascading_test.csv.stats.csv" not in paths_after
+
+
+def test_file_move_cascades_artifacts(client: TestClient) -> None:
+    csv_bytes = b"id,val\n1,10\n"
+    stats_bytes = b"stats_data"
+    client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true", "auto_scan": "true"},
+        files={"files": ("move_test.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+    client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true", "auto_scan": "true"},
+        files={"files": ("move_test.csv.stats.csv", io.BytesIO(stats_bytes), "text/csv")},
+    )
+
+    # Move/rename the primary file
+    move_res = client.post(
+        "/workspaces/sandbox/files/move",
+        json={"src_path": "data/move_test.csv", "dst_path": "data/move_renamed.csv"},
+    )
+    assert move_res.status_code == 200
+
+    files_after = client.get("/workspaces/sandbox/files", params={"path": "data"}).json()
+    paths_after = {f["path"]: f for f in files_after}
+    assert "data/move_test.csv" not in paths_after
+    assert "data/move_test.csv.stats.csv" not in paths_after
+
+    assert "data/move_renamed.csv" in paths_after
+    assert "data/move_renamed.csv.stats.csv" in paths_after
+
+
+def test_workspace_settings_and_policy_enforcement(client: TestClient) -> None:
+    # 1. Read default workspace settings
+    get_res = client.get("/workspaces/sandbox/settings")
+    assert get_res.status_code == 200
+    settings_data = get_res.json()
+    assert settings_data["rename"]["mode"] == "same_format"
+    assert settings_data["ingestion"]["enforce_zones"] is True
+
+    # 2. Uploading a PDF into data/ violates zone policy
+    bad_upload = client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true"},
+        files={"files": ("manual.pdf", io.BytesIO(b"%PDF-1.4\n..."), "application/pdf")},
+    )
+    assert bad_upload.status_code == 400
+    assert "data/**" in bad_upload.json()["detail"]
+
+    # 3. Uploading a CSV into data/ and renaming to .txt violates same_format policy
+    client.post(
+        "/workspaces/sandbox/files/upload",
+        data={"target_dir": "data", "overwrite": "true"},
+        files={"files": ("policy_test.csv", io.BytesIO(b"a,b\n1,2\n"), "text/csv")},
+    )
+    bad_move = client.post(
+        "/workspaces/sandbox/files/move",
+        json={"src_path": "data/policy_test.csv", "dst_path": "data/policy_test.txt"},
+    )
+    assert bad_move.status_code == 400
+    assert "same_format" in bad_move.json()["detail"]
+
+    # 4. Updating settings requires Admin
+    anon_patch = client.patch(
+        "/workspaces/sandbox/settings",
+        json={"rename": {"mode": "permissive"}},
+    )
+    assert anon_patch.status_code in (401, 403)
+
+    admin_patch = client.patch(
+        "/workspaces/sandbox/settings",
+        headers={"X-API-Key": ADMIN_KEY},
+        json={"rename": {"mode": "permissive"}},
+    )
+    assert admin_patch.status_code == 200
+    assert admin_patch.json()["rename"]["mode"] == "permissive"
+
+    # 5. Now cross-format rename succeeds
+    ok_move = client.post(
+        "/workspaces/sandbox/files/move",
+        json={"src_path": "data/policy_test.csv", "dst_path": "data/policy_test.txt"},
+    )
+    assert ok_move.status_code == 200

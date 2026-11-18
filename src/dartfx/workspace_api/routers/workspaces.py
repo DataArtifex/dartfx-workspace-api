@@ -1,5 +1,7 @@
 """Spaces, Workspaces listing, stats, and async task triggers (scan, fairify, readstat)."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -7,6 +9,7 @@ from sqlalchemy.orm import Session
 from dartfx.workspace.access import AccessPolicy
 from dartfx.workspace.core import Workspace
 from dartfx.workspace.models import Action, Principal, TaskEvent, TaskType, WorkspaceStats
+from dartfx.workspace.policy import WorkspaceSettings
 from dartfx.workspace.spaces import Space
 from dartfx.workspace.utils import (
     SUPPORTED_FAIRIFY_SUFFIXES,
@@ -344,3 +347,37 @@ async def trigger_readstat(
     prefix = str(request.scope.get("root_path", "")).rstrip("/")
     response.headers["Location"] = f"{prefix}/jobs/{job.id}"
     return job
+
+
+@router.get(
+    "/workspaces/{ws_id}/settings",
+    response_model=WorkspaceSettings,
+    summary="Get workspace governance settings and policies",
+)
+def get_workspace_settings(
+    ws_id: str,
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+) -> WorkspaceSettings:
+    """Return the effective rename and ingestion/zone policies for the workspace."""
+    auth_ws = resolve_authorized_workspace(ws_id, Action.READ, session, principal)
+    return auth_ws.workspace.get_settings()
+
+
+@router.patch(
+    "/workspaces/{ws_id}/settings",
+    response_model=WorkspaceSettings,
+    summary="Update workspace governance settings and policies",
+)
+def update_workspace_settings(
+    ws_id: str,
+    payload: dict[str, Any],
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+) -> WorkspaceSettings:
+    """Update rename or ingestion/zone policies for the workspace (Admin required)."""
+    auth_ws = resolve_authorized_workspace(ws_id, Action.ADMIN, session, principal)
+    try:
+        return auth_ws.workspace.update_settings(payload)
+    except Exception as exc:
+        raise map_domain_error(exc) from exc

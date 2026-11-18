@@ -1,6 +1,7 @@
 """Workspace file browsing, tree view, preview, upload, download, ZIP archive, and filesystem operations."""
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
@@ -262,13 +263,23 @@ def copy_workspace_path(
 def delete_workspace_path(
     ws_id: str,
     path: str = Query(..., min_length=1),
+    delete_artifacts: bool = Query(
+        default=True,
+        description="Whether to also remove related FAIRification / system-generated artifacts",
+    ),
     principal: Principal = Depends(get_current_principal),
     session: Session = Depends(get_db_session),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Delete a file or directory inside the workspace and prune its KB entries."""
     auth_ws = resolve_authorized_workspace(ws_id, Action.WRITE, session, principal)
     try:
-        auth_ws.workspace.remove_path(path)
-        return {"path": path, "status": "deleted"}
+        removed = auth_ws.workspace.remove_path(path, delete_artifacts=delete_artifacts)
+        norm_path = path.strip("/")
+        deleted_artifacts = [p for p in removed if p != norm_path and p != path]
+        return {
+            "path": path,
+            "status": "deleted",
+            "deleted_artifacts": deleted_artifacts,
+        }
     except Exception as exc:
         raise map_domain_error(exc) from exc
