@@ -407,10 +407,12 @@
     });
   }
 
+  let filesLoadSeq = 0;
   async function loadFiles() {
     if (!state.currentWsId) return;
     renderBreadcrumbs();
 
+    const seq = ++filesLoadSeq;
     const params = new URLSearchParams({ path: state.currentDir });
     if ($("filter-recursive").checked) params.set("recursive", "true");
     if ($("filter-glob").value.trim()) params.set("glob", $("filter-glob").value.trim());
@@ -420,6 +422,7 @@
 
     const originFilter = $("filter-origin") ? $("filter-origin").value : "";
     let entries = await apiFetch(`/workspaces/${state.currentWsId}/files?${params.toString()}`);
+    if (seq !== filesLoadSeq) return; // Discard superseded response
     if (originFilter === "user") {
       entries = entries.filter((e) => e.is_dir || !e.is_generated);
     } else if (originFilter === "system") {
@@ -443,11 +446,18 @@
           ? `${entry.file_type}/${entry.file_format}`
           : entry.file_type;
 
+      let fairifyBadge = "";
+      if (entry.fairify_status === "up_to_date") {
+        fairifyBadge = ` <span class="badge badge-fairify-ok" title="FAIRify artifacts are up-to-date">FAIRified ✔</span>`;
+      } else if (entry.fairify_status === "stale") {
+        fairifyBadge = ` <span class="badge badge-fairify-stale" title="Source was modified after FAIRification; artifacts outdated">FAIRify Outdated ⚠️</span>`;
+      }
+
       const originBadge = entry.is_dir
         ? "-"
-        : entry.is_generated
-          ? `<span class="badge badge-system" title="System-generated artifact${entry.generated_by ? ' by ' + entry.generated_by : ''}">System</span>`
-          : `<span class="badge badge-user" title="User-provided file">User</span>`;
+        : (entry.is_generated
+            ? `<span class="badge badge-system" title="System-generated artifact${entry.generated_by ? ' by ' + entry.generated_by : ''}">System</span>`
+            : `<span class="badge badge-user" title="User-provided file">User</span>`) + fairifyBadge;
 
       const applicable = Array.isArray(entry.applicable_actions) && entry.applicable_actions.length > 0
         ? entry.applicable_actions
@@ -571,8 +581,31 @@
         const detailActions = Array.isArray(detail.applicable_actions) ? detail.applicable_actions : applicable;
         const detailCanFairify = detailActions.includes("fairify");
         const detailCanToCsv = detailActions.includes("tocsv");
-        if (fairifyBtn) fairifyBtn.style.display = detailCanFairify ? "inline-flex" : "none";
+        if (fairifyBtn) {
+          if (detailCanFairify) {
+            fairifyBtn.style.display = "inline-flex";
+            fairifyBtn.textContent = "✨ Fairify";
+            fairifyBtn.onclick = () => triggerFairify(entry.path, false);
+          } else if (detail.fairify_status === "up_to_date") {
+            fairifyBtn.style.display = "inline-flex";
+            fairifyBtn.textContent = "✨ Re-Fairify (Force)";
+            fairifyBtn.onclick = () => {
+              if (confirm(`'${entry.path}' has already been FAIRified. Force re-run?`)) {
+                triggerFairify(entry.path, true);
+              }
+            };
+          } else {
+            fairifyBtn.style.display = "none";
+          }
+        }
         if (tocsvBtn) tocsvBtn.style.display = detailCanToCsv ? "inline-flex" : "none";
+
+        let fairifyStatusRow = "";
+        if (detail.fairify_status === "up_to_date") {
+          fairifyStatusRow = `<tr><td class="muted">FAIRify Status</td><td><span class="badge badge-fairify-ok">FAIRified (Up to date) ✔</span></td></tr>`;
+        } else if (detail.fairify_status === "stale") {
+          fairifyStatusRow = `<tr><td class="muted">FAIRify Status</td><td><span class="badge badge-fairify-stale">FAIRify Outdated ⚠️ (modified after generation)</span></td></tr>`;
+        }
 
         const originRow = `<tr><td class="muted">Origin</td><td>${
           detail.is_generated
@@ -591,6 +624,7 @@
             <tr><td class="muted">UUID</td><td class="mono">${detail.uuid}</td></tr>
             <tr><td class="muted">Path</td><td class="mono">${detail.path}</td></tr>
             ${originRow}
+            ${fairifyStatusRow}
             ${applicableRow}
             <tr><td class="muted">Type</td><td>${detail.type}</td></tr>
             <tr><td class="muted">Format</td><td>${detail.file_format}</td></tr>
@@ -681,12 +715,12 @@
     }
   }
 
-  async function triggerFairify(sourcePath) {
+  async function triggerFairify(sourcePath, force = false) {
     try {
       const job = await apiFetch(`/workspaces/${state.currentWsId}/fairify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_path: sourcePath, describe: false }),
+        body: JSON.stringify({ source_path: sourcePath, describe: false, force }),
       });
       toast(`Fairify job queued for ${sourcePath}`);
       subscribeJobSse(job.id);
@@ -894,7 +928,48 @@
     }
   };
 
-  $("btn-refresh-files").onclick = loadFiles;
+  let filterDebounceTimer = null;
+  function debouncedLoadFiles(delay = 250) {
+    clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => {
+      loadFiles();
+    }, delay);
+  }
+
+  // Instant filtering on select dropdowns and recursive checkbox
+  ["filter-type", "filter-origin", "filter-registered", "filter-recursive"].forEach((id) => {
+    const el = $(id);
+    if (el) {
+      el.onchange = () => {
+        clearTimeout(filterDebounceTimer);
+        loadFiles();
+      };
+    }
+  });
+
+  // Debounced live filtering on text / glob search inputs with Enter shortcut
+  ["filter-glob", "filter-format"].forEach((id) => {
+    const el = $(id);
+    if (el) {
+      el.oninput = () => debouncedLoadFiles(250);
+      el.onsearch = () => {
+        clearTimeout(filterDebounceTimer);
+        loadFiles();
+      };
+      el.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          clearTimeout(filterDebounceTimer);
+          loadFiles();
+        }
+      };
+    }
+  });
+
+  $("btn-refresh-files").onclick = () => {
+    clearTimeout(filterDebounceTimer);
+    loadFiles();
+  };
   $("btn-browse-upload").onclick = () => $("file-input").click();
   $("file-input").onchange = (e) => uploadFiles(e.target.files);
   const dz = $("dropzone");

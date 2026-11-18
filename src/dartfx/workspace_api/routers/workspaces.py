@@ -13,6 +13,7 @@ from dartfx.workspace.utils import (
     SUPPORTED_READSTAT_SUFFIXES,
     detect_system_generated,
     is_fairifiable_file,
+    is_fairify_up_to_date,
     is_statistical_file,
 )
 from workspace_api.db import space_record_to_config, workspace_record_to_config
@@ -255,6 +256,15 @@ async def trigger_fairify(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported format for fairify: '{target.suffix}'. Expected one of: {allowed}",
             )
+
+        if not payload.force and is_fairify_up_to_date(target):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"File '{payload.source_path}' has already been FAIRified and has not changed. "
+                    "Pass force=true to re-run."
+                ),
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -264,7 +274,11 @@ async def trigger_fairify(
         workspace_id=auth_ws.record.id,
         workspace_path=auth_ws.workspace.path,
         task_type=TaskType.FAIRIFY,
-        params={"source_path": payload.source_path, "describe": payload.describe},
+        params={
+            "source_path": payload.source_path,
+            "describe": payload.describe,
+            "force": payload.force,
+        },
         submitted_by=principal.id,
         webhook_url=payload.webhook_url,
     )

@@ -139,6 +139,7 @@ class FairifyJobRequest(BaseModel):
 
     source_path: str
     describe: bool = False
+    force: bool = False
     webhook_url: str | None = None
 
 

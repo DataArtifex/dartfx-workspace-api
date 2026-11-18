@@ -166,6 +166,7 @@ class JobManager:
                     workspace_id=workspace_id,
                     source_rel_path=str(params["source_path"]),
                     describe=bool(params.get("describe", False)),
+                    force=bool(params.get("force", False)),
                     on_event=_on_event,
                     cancel_check=_is_cancelled,
                 )

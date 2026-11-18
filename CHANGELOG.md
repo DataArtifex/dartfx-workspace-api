@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.1.0]
 
+- Added FAIRify freshness detection (`fairify_status`: `available`, `up_to_date`, `stale`) and blocked redundant execution on up-to-date files unless `force=true` is passed; enhanced Web Client with `FAIRified ✔` and `FAIRify Outdated ⚠️` badges and drawer force re-run option.
 - Enforced provenance and command eligibility guardrails in `/fairify` (only user-provided CSV/Parquet) and `/readstat` (only statistical files `dta|por|sas7bdat|sav|xpt|zsav`).
 - Enhanced Web Client file explorer with Origin badge (`User` vs `System`), origin filtering, dynamic action button rendering based on `applicable_actions`, and detailed file provenance metadata in the Resource Inspector drawer.
 - Initial release of `dartfx-workspace-api` compliant with `dartfx-foo-api` template specifications.
