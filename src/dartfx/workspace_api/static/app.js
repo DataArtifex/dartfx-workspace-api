@@ -14,7 +14,7 @@
     currentTab: "overview",
     currentResource: null,
     lastFiles: [],
-    expandedArtifactParents: new Set(),
+    collapsedArtifactParents: new Set(),
     eventSources: new Map(),
   };
 
@@ -517,7 +517,7 @@
       actions.push(`<button class="btn btn-xs btn-danger act-del" title="Delete">🗑</button>`);
 
       const toggleHtml = childCount > 0
-        ? `<button class="artifact-toggle-btn" title="Show/hide ${childCount} generated artifact(s)">${isExpanded ? "▾" : "▸"} ${childCount}</button>`
+        ? `<button class="artifact-toggle-btn" title="Show/hide ${childCount} generated artifact(s)">${isExpanded ? "▾" : "▸"} ${childCount} artifacts</button>`
         : "";
 
       const nameCellContent = isChild
@@ -582,7 +582,7 @@
 
     topLevelEntries.forEach((entry) => {
       const children = childrenByParent.get(entry.path) || [];
-      const isExpanded = state.expandedArtifactParents.has(entry.path);
+      const isExpanded = !state.collapsedArtifactParents.has(entry.path);
       const parentRow = buildFileRow(entry, {
         isChild: false,
         childCount: children.length,
@@ -600,14 +600,15 @@
       if (toggleBtn) {
         toggleBtn.onclick = (ev) => {
           ev.stopPropagation();
-          const nowExpanded = !state.expandedArtifactParents.has(entry.path);
-          if (nowExpanded) {
-            state.expandedArtifactParents.add(entry.path);
+          const nowCollapsed = !state.collapsedArtifactParents.has(entry.path);
+          if (nowCollapsed) {
+            state.collapsedArtifactParents.add(entry.path);
           } else {
-            state.expandedArtifactParents.delete(entry.path);
+            state.collapsedArtifactParents.delete(entry.path);
           }
-          toggleBtn.textContent = `${nowExpanded ? "▾" : "▸"} ${children.length}`;
-          childRows.forEach((r) => r.classList.toggle("hidden", !nowExpanded));
+          const isExp = !nowCollapsed;
+          toggleBtn.textContent = `${isExp ? "▾" : "▸"} ${children.length} artifacts`;
+          childRows.forEach((r) => r.classList.toggle("hidden", !isExp));
         };
       }
     });
